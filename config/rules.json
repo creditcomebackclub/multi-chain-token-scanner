@@ -1,0 +1,22 @@
+{
+  "version": "v2",
+  "minPoolAgeMinutes": 10,
+  "maxPoolAgeHours": 24,
+  "minVolume5mUsd": 5000,
+  "minSwaps5m": 25,
+  "minBuyers5m": 15,
+  "minBuySellCountRatio": 1.1,
+  "minBuySellUsdRatio": 1.15,
+  "maxBuyerShare": 0.2,
+  "maxTopFiveShare": 0.6,
+  "maxFdvLiquidity": 20,
+  "maxPriceChange5mPercent": 50,
+  "maxTax": 0.1,
+  "maxHolderShare": 0.2,
+  "maxTopTenHolderShare": 0.6,
+  "alertThreshold": 80,
+  "hitTargetPercent": 20,
+  "hitMaxDrawdownPercent": 20,
+  "evaluationOrderUsd": 100,
+  "maxPriceImpactPercent": 3
+}

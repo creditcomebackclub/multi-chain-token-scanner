@@ -1,0 +1,10 @@
+{
+  "chainId": "ethereum", "pairAddress": "0x3333333333333333333333333333333333333333",
+  "url": "https://dexscreener.com/ethereum/0x3333333333333333333333333333333333333333",
+  "baseToken": { "address": "0x1111111111111111111111111111111111111111", "name": "Example <Token> & Co", "symbol": "EXM" },
+  "quoteToken": { "address": "0x2222222222222222222222222222222222222222", "name": "Quote", "symbol": "Q" },
+  "priceUsd": "1.055", "pairCreatedAt": 1788516000000,
+  "liquidity": { "usd": 300000 }, "fdv": 1200000, "marketCap": 1100000,
+  "priceChange": { "m5": 5, "h1": 10 }, "volume": { "m5": 200000, "h1": 900000 },
+  "txns": { "m5": { "buys": 120, "sells": 40 } }
+}

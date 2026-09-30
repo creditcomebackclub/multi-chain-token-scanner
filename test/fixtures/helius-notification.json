@@ -1,0 +1,9 @@
+{
+  "jsonrpc": "2.0", "method": "transactionNotification", "params": { "subscription": 1,
+    "result": { "signature": "SyntheticConfirmedSignature", "slot": 123,
+      "transaction": { "meta": { "err": null, "preTokenBalances": [], "postTokenBalances": [
+        { "mint": "So11111111111111111111111111111111111111112", "uiTokenAmount": { "amount": "1000000", "decimals": 9 } }
+      ] } }
+    }
+  }
+}

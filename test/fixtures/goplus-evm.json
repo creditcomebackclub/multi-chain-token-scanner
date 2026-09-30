@@ -1,0 +1,13 @@
+{
+  "code": 1,
+  "result": { "0x1111111111111111111111111111111111111111": {
+    "is_open_source": "1", "is_honeypot": "0", "cannot_buy": "0", "cannot_sell_all": "0",
+    "is_proxy": "0", "is_mintable": "0", "can_take_back_ownership": "0", "owner_change_balance": "0",
+    "hidden_owner": "0", "selfdestruct": "0", "external_call": "0", "is_blacklisted": "0",
+    "is_whitelisted": "0", "slippage_modifiable": "0", "personal_slippage_modifiable": "0",
+    "transfer_pausable": "0", "buy_tax": "0", "sell_tax": "0",
+    "creator_address": "0x4444444444444444444444444444444444444444",
+    "holders": [{ "address": "holder-1", "percent": "0.1" }, { "address": "holder-2", "percent": "0.09" }, { "address": "holder-3", "percent": "0.08" }, { "percent": "0.03" }, { "percent": "0.03" }, { "percent": "0.03" }, { "percent": "0.03" }, { "percent": "0.03" }, { "percent": "0.03" }, { "percent": "0.03" }]
+  } },
+  "creatorSecurity": { "code": 1, "result": { "honeypot_related_address": "0", "phishing_activities": "0", "blackmail_activities": "0", "stealing_attack": "0", "fake_kyc": "0", "malicious_mining_activities": "0", "darkweb_transactions": "0", "cybercrime": "0", "money_laundering": "0", "financial_crime": "0", "blacklist_doubt": "0", "gas_abuse": "0", "reinit": "0", "fake_standard_interface": "0", "fake_token": "0", "contract_address": "1", "number_of_malicious_contracts_created": "0" } }
+}

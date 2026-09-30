@@ -1,0 +1,14 @@
+{
+  "bankrollUsd": 100,
+  "orderUsd": 5,
+  "maxPositions": 3,
+  "dailyLossUsd": 10,
+  "maxEntriesPerDay": 10,
+  "stopLossPercent": 20,
+  "takeProfitPercent": 50,
+  "takeProfitSellPercent": 50,
+  "runnerTrailPercent": 25,
+  "assumedFeePercent": 1,
+  "assumedSlippagePercent": 1,
+  "assumedNetworkFeeUsd": 0.1
+}

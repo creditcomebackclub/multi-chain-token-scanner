@@ -1,0 +1,13 @@
+{
+  "Side": "Buy", "Block": { "Time": "2026-09-04T12:00:00Z" },
+  "Trader": { "Address": "0x4444444444444444444444444444444444444444" },
+  "TransactionHeader": { "Hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+  "Amounts": { "Base": "1000.0000000000" },
+  "AmountsInUsd": { "Base": "99000", "Quote": "100" },
+  "Pair": {
+    "Token": { "Address": "0x1111111111111111111111111111111111111111", "IsNative": false },
+    "QuoteToken": { "Address": "0x2222222222222222222222222222222222222222" },
+    "Pool": { "Address": "0x3333333333333333333333333333333333333333" },
+    "Market": { "Address": "0x5555555555555555555555555555555555555555", "NetworkBid": "bid:eth", "ProtocolFamily": "Uniswap" }
+  }
+}

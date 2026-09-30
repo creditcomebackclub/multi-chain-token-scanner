@@ -1,0 +1,17 @@
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { config, MINUTE, address, type Chain } from './config.js';
+import { BitqueryHttp, tradeQuery } from './providers/bitquery.js';
+import { DexScreener, GoPlus } from './providers/enrichment.js';
+const c = config(), chain = process.argv[2] as Chain, token = process.argv[3];
+if (!c.chains.includes(chain) || !token || !c.bitqueryToken) throw new Error('Usage: npm run capture -- <configured-chain> <full-token-address>; BITQUERY_TOKEN required');
+address(chain, token);
+const now = Date.now(), output = `captures/${new Date(now).toISOString().replace(/[:.]/g, '-')}-${chain}`;
+const bq = new BitqueryHttp(c.bitqueryToken), dex = new DexScreener(), go = new GoPlus(c.goplusToken);
+const rows = await bq.rows(tradeQuery(chain, { from: now - 15 * MINUTE, to: now, token, limit: 1000 }));
+const markets = await dex.batch(chain, [token]), security = await go.check(chain, token);
+mkdirSync(output, { recursive: true });
+writeFileSync(`${output}/bitquery.json`, JSON.stringify(rows, null, 2));
+writeFileSync(`${output}/dexscreener.json`, JSON.stringify(markets.get(token)?.map(m => m.raw) || [], null, 2));
+writeFileSync(`${output}/goplus.json`, JSON.stringify(security.raw, null, 2));
+writeFileSync(`${output}/manifest.json`, JSON.stringify({ capturedAt: now, chain, token, rows: rows.length, possiblyTruncated: rows.length === 1000, sources: ['Bitquery Trading.Trades', 'DEX Screener tokens/v1', 'GoPlus token and creator security'] }, null, 2));
+console.log(`Saved provider response bodies to ${output}. Review metadata before committing fixtures; credentials were not recorded.`);

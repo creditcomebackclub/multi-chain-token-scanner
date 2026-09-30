@@ -1,0 +1,10 @@
+{
+  "code": 1, "result": { "So11111111111111111111111111111111111111112": {
+    "default_account_state": "1", "non_transferable": "0",
+    "mintable": { "status": "0" }, "freezable": { "status": "0" }, "closable": { "status": "0" },
+    "transfer_fee_upgradable": { "status": "0" }, "default_account_state_upgradable": { "status": "0" },
+    "balance_mutable_authority": { "status": "0" }, "transfer_hook_upgradable": { "status": "0" },
+    "transfer_fee": {}, "transfer_hook": [], "creator": [{ "address": "Example", "malicious_address": "0" }],
+    "holders": [{ "percent": "0.1" }, { "percent": "0.09" }, { "percent": "0.08" }, { "percent": "0.03" }, { "percent": "0.03" }, { "percent": "0.03" }, { "percent": "0.03" }, { "percent": "0.03" }, { "percent": "0.03" }, { "percent": "0.03" }]
+  } }
+}
