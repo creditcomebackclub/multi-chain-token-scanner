@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { analyzeChartLearning, failureTags, type LearningRow } from '../src/chart-learning.js';
+import { analyzeChartLearning, failureTags, simulateTrade, type LearningRow } from '../src/chart-learning.js';
 import type { AlertOutcome } from '../src/chart-monitor.js';
 import type { ResearchFeatures, Setup } from '../src/chart-pattern.js';
 
@@ -42,4 +42,10 @@ test('shadow variants use delayed fills, partial exits, modeled costs and accoun
   assert.equal(variant.resolved,2);assert.equal(variant.wins,1);assert.equal(variant.losses,1);assert.equal(variant.tp2,1);
   assert.ok(variant.endingBalanceUsd<1_000);assert.ok(variant.maxDrawdownUsd>0);assert.equal(report.shadow.costBps,200);
   assert.equal(report.shadow.variants.find(v=>v.id==='ethereumForward')?.eligible,0);
+});
+
+test('exported trade simulator preserves the existing green-hold payoff',()=>{
+  const win=row('WIN','tp1',{open:1,close:1.01,volume:800},2.5,4);
+  win.futureCandles=[win.confirmationCandle!,{at:600_000,open:1.02,high:1.12,low:1.011,close:1.1,volume:700}];
+  assert.deepEqual(simulateTrade(win,true,200),{chain:'ethereum',token:'WIN',entryAt:600_000,exitAt:900_000,status:'tp2',grossReturnPct:7.5,netReturnPct:5.5,resolved:true});
 });

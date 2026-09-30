@@ -50,6 +50,7 @@ const features:{id:string;label:string;value:(row:LearningRow)=>number|null|unde
   {id:'supportTestCount',label:'support tests',value:r=>r.setup.features?.supportTestCount},
   {id:'supportTouchAgeBars',label:'bars since support touch',value:r=>r.setup.features?.supportTouchAgeBars},
 ];
+export const ML_FEATURE_IDS=features.map(feature=>feature.id);
 
 export function failureTags(row:LearningRow):string[]{
   const signal=row.signalCandle,next=row.confirmationCandle,entry=row.setup.price;if(!next)return['next candle unavailable'];const tags:string[]=[];
@@ -60,15 +61,15 @@ export function failureTags(row:LearningRow):string[]{
   if(next.close<row.setup.upper)tags.push('fell back below support-zone top');
   return tags.length?tags:['no immediate confirmation failure'];
 }
-const screenDefinitions=[
+export const screenDefinitions=[
   {id:'hold',label:'next close holds within 0.5% of signal entry',pass:(r:LearningRow)=>r.confirmationCandle!.close>=r.setup.price*.995},
   {id:'greenHold',label:'next candle is green and holds within 0.5%',pass:(r:LearningRow)=>r.confirmationCandle!.close>=r.setup.price*.995&&r.confirmationCandle!.close>r.confirmationCandle!.open},
   {id:'holdVolume',label:'next close holds and retains 35% of signal volume',pass:(r:LearningRow)=>r.confirmationCandle!.close>=r.setup.price*.995&&!!r.signalCandle?.volume&&r.confirmationCandle!.volume>=r.signalCandle!.volume*.35},
   {id:'greenHoldVolume',label:'next candle is green, holds, and retains 35% volume',pass:(r:LearningRow)=>r.confirmationCandle!.close>=r.setup.price*.995&&r.confirmationCandle!.close>r.confirmationCandle!.open&&!!r.signalCandle?.volume&&r.confirmationCandle!.volume>=r.signalCandle!.volume*.35},
 ];
 
-type SimulatedTrade={chain:string;token:string;entryAt:number;exitAt:number;status:'tp2'|'runner_breakeven'|'stop'|'time'|'open';grossReturnPct:number;netReturnPct:number;resolved:boolean};
-const shadowDefinitions=[
+export type SimulatedTrade={chain:string;token:string;entryAt:number;exitAt:number;status:'tp2'|'runner_breakeven'|'stop'|'time'|'open';grossReturnPct:number;netReturnPct:number;resolved:boolean};
+export const shadowDefinitions=[
   {id:'immediate',label:'Immediate signal entry',confirm:false,dedupe:false,pass:(_r:LearningRow)=>true},
   {id:'greenHold',label:'Next candle green + holds within 0.5%',confirm:true,dedupe:false,pass:(r:LearningRow)=>!!r.confirmationCandle&&r.confirmationCandle.close>=r.setup.price*.995&&r.confirmationCandle.close>r.confirmationCandle.open},
   {id:'greenHoldVolume',label:'Green hold + retains 35% signal volume',confirm:true,dedupe:false,pass:(r:LearningRow)=>!!r.confirmationCandle&&r.confirmationCandle.close>=r.setup.price*.995&&r.confirmationCandle.close>r.confirmationCandle.open&&!!r.signalCandle?.volume&&r.confirmationCandle.volume>=r.signalCandle.volume*.35},
@@ -76,7 +77,7 @@ const shadowDefinitions=[
   {id:'ethereumForward',label:'Ethereum-only forward cohort (locked Sep 28)',confirm:false,dedupe:false,pass:(r:LearningRow)=>r.chain==='ethereum'&&r.at>=ETHEREUM_FORWARD_START},
 ];
 
-function simulateTrade(row:LearningRow,confirm:boolean,costBps:number):SimulatedTrade|null{
+export function simulateTrade(row:LearningRow,confirm:boolean,costBps:number):SimulatedTrade|null{
   const confirmation=row.confirmationCandle;
   if(confirm&&!confirmation)return null;
   const entry=confirm?confirmation!.close:row.setup.price,entryAt=confirm?confirmation!.at+BAR:row.at,stop=row.setup.lower*.995;
@@ -103,6 +104,13 @@ function simulateTrade(row:LearningRow,confirm:boolean,costBps:number):Simulated
   const last=candles.at(-1)!,complete=last.at+BAR>=end;
   const gross=halfSold?2.5+.5*(last.close/entry-1)*100:(last.close/entry-1)*100;
   return{chain:row.chain,token:row.token,entryAt,exitAt:last.at+BAR,status:complete?'time':'open',grossReturnPct:gross,netReturnPct:gross-costBps/100,resolved:complete};
+}
+
+export function learningFlags(row:LearningRow):Record<string,boolean>{
+  const flags:Record<string,boolean>={};
+  for(const definition of shadowDefinitions.filter(item=>item.id!=='ethereumForward'))flags[`rule_${definition.id}`]=definition.pass(row);
+  for(const screen of screenDefinitions)flags[`screen_${screen.id}`]=!!row.confirmationCandle&&screen.pass(row);
+  return flags;
 }
 
 function summarizeShadow(rows:LearningRow[],costBps:number):ShadowVariant[]{

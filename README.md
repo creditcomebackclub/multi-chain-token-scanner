@@ -1,8 +1,23 @@
-# Multi-chain token scanner
+# Multi-Chain Event-Study Pipeline for Short-Horizon Crypto Signals
 
-A runnable TypeScript service implementing the scanner's core path: confirmed trades → deduplication → rolling flow → market enrichment → contract-risk gate → scoring → two snapshots → capped private Telegram alerts.
+An event-study and forward-validation system for short-horizon crypto price signals across Solana, Ethereum, BNB Chain, Robinhood Chain, and Base. The TypeScript service collects point-in-time market observations and runs the live scanner; the offline Python layer tests whether its engineered 5-minute features beat hand-written rules after modeled costs.
 
 It has no wallet integration, transaction signing, or trade execution. An automated risk check or high score does not establish that a token is safe or predict a return.
+
+## Research: does the signal have an edge?
+
+The portfolio research question is whether point-in-time 5-minute setup features predict TP1-first outcomes better than the hand-written rules after modeled costs. The offline Python study uses expanding-window validation, purges overlapping 24-hour label windows, preserves post-test embargoes in later training folds, applies a 24-hour pre-test gap, keeps repeated token/support groups together, and selects model thresholds and calibration only inside training folds.
+
+**Headline status: awaiting a production snapshot.** No model performance or confidence interval is claimed until `research/ml/data/snapshot.csv` is exported from the production database. The deterministic synthetic dataset tests the research pipeline but is never presented as empirical evidence. See [the research report](research/ml/reports/REPORT.md) and the five thin notebooks in `research/ml/notebooks/`.
+
+```sh
+npm run research:export
+python3.12 -m venv research/ml/.venv
+research/ml/.venv/bin/pip install -r research/ml/requirements.txt
+research/ml/.venv/bin/python research/ml/run_all.py
+```
+
+The export contains one canonical row per research observation, labels delivered setups as `source=alert` rather than duplicating them, and omits wallet-watch, Telegram identity, and credential data. All simulated returns—including the 300 bps sensitivity—come from the TypeScript trade simulator used by the scanner's existing shadow analysis. Models remain offline and cannot affect live alerts.
 
 ## Free shortlist mode
 
@@ -22,7 +37,7 @@ npm run demo
 
 The demo uses clearly labeled synthetic provider fixtures. It shows a qualifying candidate, duplicate removal, the formatted alert, and a security-outage rejection. It does not contact any provider or send a message. Tests run a PostgreSQL 17 engine through PGlite without requiring Docker.
 
-Build verification: **113 tests passed** and TypeScript compilation passed. The free shortlist Docker build and Railway deployment have also been exercised with live public pool data on all five configured chains.
+Build verification: **114 tests passed** and TypeScript compilation passed. The free shortlist Docker build and Railway deployment have also been exercised with live public pool data on all five configured chains.
 
 ## Start full observation
 
