@@ -33,6 +33,8 @@ Build verification: **113 tests passed** and TypeScript compilation passed. The 
 
 Optional GoPlus bearer credentials go in `GOPLUS_TOKEN`. Without a token the adapter attempts the public endpoint within a conservative request rate. Account or chain limitations result in `UNKNOWN` and block candidate alerts.
 
+`config/watched-wallets.json` contains inert example addresses for the optional wallet-watch module. Replace them with addresses you are authorized to monitor before enabling `WALLET_WATCH_ENABLED`; the feature is disabled by default.
+
 For local Postgres, install/start Docker, choose a URL-safe `POSTGRES_PASSWORD` in `.env`, and run:
 
 ```sh

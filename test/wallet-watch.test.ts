@@ -6,7 +6,7 @@ import type { WalletTrade } from '../src/types.js';
 import { EVM_QUOTES, evmSwap, solanaSwap } from '../src/wallet-watch.js';
 import { testStore } from './helpers.js';
 
-const WALLET = '0x696d1265c8fc4f14797abebfae3c43ebfa9d8e28';
+const WALLET = '0x1111111111111111111111111111111111111111';
 const TOKEN = '0x1111111111111111111111111111111111111111';
 const USDC = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
 const transfer = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
@@ -25,7 +25,7 @@ test('EVM wallet classification requires paired quote and token movements', () =
 });
 
 test('Solana wallet classification requires a paired balance exchange', () => {
-  const owner = '498g1rVnFcnjBjpfw1xyqA1WvgQXUU8RWuELjxkjAayQ';
+  const owner = '11111111111111111111111111111111';
   const mint = 'ANM35KbUcfKdEVBXzSjZBoT6ceSwYRs3fuc79fp7kRqP';
   const usdc = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
   const balance = (token: string, raw: string, decimals: number) => ({ owner, mint: token, uiTokenAmount: { amount: raw, decimals } });
@@ -40,7 +40,7 @@ test('Solana wallet classification requires a paired balance exchange', () => {
 });
 
 const trade = (): WalletTrade => ({
-  id: 'wallet-event', trader: 'Rowdy', wallet: WALLET, chain: 'ethereum', tx: `0x${'a'.repeat(64)}`,
+  id: 'wallet-event', trader: 'Example trader', wallet: WALLET, chain: 'ethereum', tx: `0x${'a'.repeat(64)}`,
   at: Date.now(), side: 'buy', token: TOKEN, tokenAmount: '500', tokenSymbol: 'MEME',
   quoteSymbol: 'USDC', quoteAmount: '25', quoteUsd: 25, chart: 'https://dexscreener.com/ethereum/pair',
 });
@@ -61,8 +61,8 @@ test('wallet alert reservations validate the chat, honor pause, and deduplicate'
 });
 
 test('wallet alert renders a direct proof link and explains transfer filtering', () => {
-  const message = renderWalletTrade({ ...trade(), trader: 'Rowdy & Co' }, config({ WALLET_WATCH_ENABLED: 'true' }));
-  assert.match(message, /ROWDY &amp; CO BOUGHT/);
+  const message = renderWalletTrade({ ...trade(), trader: 'Example & Co' }, config({ WALLET_WATCH_ENABLED: 'true' }));
+  assert.match(message, /EXAMPLE &amp; CO BOUGHT/);
   assert.match(message, /etherscan\.io\/tx/);
   assert.match(message, /Airdrops and one-way transfers are ignored/);
   assert.match(message, new RegExp(`<code>${TOKEN}</code>`));
