@@ -9,6 +9,7 @@ FEATURES = [
     "priceToEma9Pct", "ema9ToEma21Pct", "priceToSma50Pct",
     "priorPeakDrawdownPct", "supportTestCount", "supportTouchAgeBars",
 ]
+FEATURES_WITHOUT_RISK = [feature for feature in FEATURES if feature != "riskPct"]
 RULES = [
     "rule_immediate", "rule_greenHold", "rule_greenHoldVolume", "rule_qualityUnique",
     "screen_hold", "screen_greenHold", "screen_holdVolume", "screen_greenHoldVolume",
@@ -44,6 +45,18 @@ def load_dataset(path: str | Path) -> pd.DataFrame:
     frame["day"] = frame["detected_dt"].dt.floor("D")
     group_parts = frame[["chain", "token", "support_anchor"]].astype("string").fillna("<none>")
     frame["group_id"] = group_parts.agg("|".join, axis=1)
+    # Risk-normalized first-barrier outcome. A TP1-first row realizes +5% at
+    # the recorded barrier; a stop-first row realizes -riskPct. The binary
+    # variant asks whether that recorded exit delivered at least +1R. This is
+    # deliberately separate from the original "+5% before stop" label and is
+    # modeled without riskPct as an input.
+    valid_risk = frame["riskPct"].gt(0) & frame["y"].isin([0, 1])
+    barrier_return = pd.Series(pd.NA, index=frame.index, dtype="Float64")
+    barrier_return.loc[valid_risk & frame["y"].eq(1)] = 5.0
+    barrier_return.loc[valid_risk & frame["y"].eq(0)] = -frame.loc[valid_risk & frame["y"].eq(0), "riskPct"]
+    frame["r_multiple"] = barrier_return / frame["riskPct"]
+    frame["r_multiple_y"] = pd.Series(pd.NA, index=frame.index, dtype="Float64")
+    frame.loc[valid_risk, "r_multiple_y"] = frame.loc[valid_risk, "r_multiple"].ge(1.0).astype(float)
     return frame.sort_values(["detected_at", "id"]).reset_index(drop=True)
 
 def resolved(frame: pd.DataFrame) -> pd.DataFrame:

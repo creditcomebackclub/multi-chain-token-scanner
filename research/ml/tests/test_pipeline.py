@@ -9,6 +9,9 @@ def test_full_synthetic_pipeline_writes_report_and_figures(tmp_path: Path):
     data=make_synthetic(tmp_path/"synthetic.csv",rows=300)
     frame=load_dataset(data)
     assert len(frame)==300 and frame["source"].eq("control").any()
+    valid=frame.loc[frame["riskPct"].gt(0)&frame["y"].isin([0,1])]
+    assert valid["r_multiple"].notna().all()
+    assert valid["r_multiple_y"].isin([0,1]).all()
     report=run_study(data,tmp_path/"reports",synthetic=True,bootstrap_scale=.01)
     assert report.exists()
     text=report.read_text()
