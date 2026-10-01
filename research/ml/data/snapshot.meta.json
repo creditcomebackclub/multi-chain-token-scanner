@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "exported_at": "2026-10-01T15:44:24.867Z",
+  "git_sha": "cac86a75a75f75b31c0b7723f43ac37b80f2d5fc",
+  "csv_sha256": "fe34ae58b45a7b2a75c07257277983ad8a4084321d089a1c12a6de446f180856",
+  "rows": 9331,
+  "source_counts": {
+    "alert": 4,
+    "control": 9265,
+    "signal": 62
+  },
+  "label_counts": {
+    "tp1": 4812,
+    "stop": 3233,
+    "ambiguous": 250,
+    "unresolved": 1036
+  },
+  "table_counts": {
+    "chart_research_observations": 9331,
+    "chart_research_outcomes": 9272,
+    "chart_signals": 87,
+    "chart_setup_alerts": 12,
+    "chart_candles": 40683
+  },
+  "feature_columns": [
+    "volumeRatio",
+    "riskPct",
+    "atrPct",
+    "bodyPct",
+    "closePosition",
+    "upperWickPct",
+    "lowerWickPct",
+    "ema9SlopePct",
+    "ema21SlopePct",
+    "priceToEma9Pct",
+    "ema9ToEma21Pct",
+    "priceToSma50Pct",
+    "priorPeakDrawdownPct",
+    "supportTestCount",
+    "supportTouchAgeBars"
+  ],
+  "cost_scenarios_bps": [
+    200,
+    300
+  ],
+  "notes": [
+    "One canonical row per research observation; delivered signals use source=alert.",
+    "Controls are eligible non-signal candles from the selected-pair universe.",
+    "Wallet-watch, Telegram identity, and credentials are never queried."
+  ]
+}

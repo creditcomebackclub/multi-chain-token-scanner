@@ -1,8 +1,23 @@
-# Multi-chain token scanner
+# Multi-Chain Event-Study Pipeline for Short-Horizon Crypto Signals
 
-A runnable TypeScript service implementing the scanner's core path: confirmed trades → deduplication → rolling flow → market enrichment → contract-risk gate → scoring → two snapshots → capped private Telegram alerts.
+An event-study and forward-validation system for short-horizon crypto price signals across Solana, Ethereum, BNB Chain, Robinhood Chain, and Base. The TypeScript service collects point-in-time market observations and runs the live scanner; the offline Python layer tests whether its engineered 5-minute features beat hand-written rules after modeled costs.
 
 It has no wallet integration, transaction signing, or trade execution. An automated risk check or high score does not establish that a token is safe or predict a return.
+
+## Research: does the signal have an edge?
+
+The portfolio research question is whether point-in-time 5-minute setup features predict TP1-first outcomes better than the hand-written rules after modeled costs. The offline Python study uses expanding-window validation, purges overlapping 24-hour label windows, preserves post-test embargoes in later training folds, applies a 24-hour pre-test gap, keeps repeated token/support groups together, and selects model thresholds and calibration only inside training folds.
+
+**Headline result from the September 26–October 1 production snapshot:** the present signal does not establish a cost-adjusted edge. The dataset has 9,331 observations and 8,045 resolved labels, but only 66 signal/alert rows and 29 out-of-fold signal trades with simulator returns. Taking every eligible trade produced −1.454% mean net return per trade (95% day-block bootstrap CI: −2.462% to −0.649%) at 200 bps modeled costs. The `qualityUnique` rule was the only positive rule at +0.752%, but it had only 4 trades, its CI spanned −8.492% to +3.833%, and it fell to −0.248% at 300 bps. The model-filtered strategy returned −1.330%; its paired difference from `qualityUnique` was −2.082 percentage points with a CI of −3.403 to +7.162, so the model is not distinguishable from the best rule. See [the full research report](research/ml/reports/REPORT.md) and the five notebooks in `research/ml/notebooks/`.
+
+```sh
+npm run research:export
+python3.12 -m venv research/ml/.venv
+research/ml/.venv/bin/pip install -r research/ml/requirements.txt
+research/ml/.venv/bin/python research/ml/run_all.py
+```
+
+The export contains one canonical row per research observation, labels delivered setups as `source=alert` rather than duplicating them, and omits wallet-watch, Telegram identity, and credential data. All simulated returns—including the 300 bps sensitivity—come from the TypeScript trade simulator used by the scanner's existing shadow analysis. Models remain offline and cannot affect live alerts.
 
 ## Free shortlist mode
 
@@ -22,7 +37,7 @@ npm run demo
 
 The demo uses clearly labeled synthetic provider fixtures. It shows a qualifying candidate, duplicate removal, the formatted alert, and a security-outage rejection. It does not contact any provider or send a message. Tests run a PostgreSQL 17 engine through PGlite without requiring Docker.
 
-Build verification: **113 tests passed** and TypeScript compilation passed. The free shortlist Docker build and Railway deployment have also been exercised with live public pool data on all five configured chains.
+Build verification: **114 tests passed** and TypeScript compilation passed. The free shortlist Docker build and Railway deployment have also been exercised with live public pool data on all five configured chains.
 
 ## Start full observation
 
