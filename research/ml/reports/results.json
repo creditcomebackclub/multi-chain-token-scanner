@@ -1,0 +1,33 @@
+{
+  "synthetic": false,
+  "rows": 9331,
+  "resolved": 8045,
+  "folds": 4,
+  "model_details": {
+    "folds": 4,
+    "permutation_importance": {
+      "riskPct": 0.05666278433663495,
+      "priorPeakDrawdownPct": 0.005582119278728465,
+      "supportTouchAgeBars": 0.004288335828563388,
+      "ema21SlopePct": 0.0015357974347974604,
+      "volumeRatio": 0.0014282213412000013,
+      "upperWickPct": 0.0003896830356715092,
+      "bodyPct": 0.00010100552115757666,
+      "ema9SlopePct": 9.348796838931013e-05,
+      "closePosition": 8.342982955314021e-05,
+      "lowerWickPct": 3.425203203751004e-05,
+      "priceToEma9Pct": 0.0,
+      "priceToSma50Pct": -0.00031151950211680827,
+      "ema9ToEma21Pct": -0.0004722341679962285,
+      "atrPct": -0.0051293661135251205,
+      "supportTestCount": -0.010810533265766408
+    }
+  },
+  "paired": {
+    "best_rule": "rule_qualityUnique",
+    "difference": -2.081973082507835,
+    "ci_low": -3.402519450867726,
+    "ci_high": 7.161851496011407
+  },
+  "recommended_resolved": null
+}

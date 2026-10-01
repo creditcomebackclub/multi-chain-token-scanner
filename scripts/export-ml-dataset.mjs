@@ -12,6 +12,11 @@ if(!databaseUrl)throw new Error('DATABASE_URL is required');
 const outDir=path.resolve('research/ml/data');
 const csvPath=path.join(outDir,'snapshot.csv'),metaPath=path.join(outDir,'snapshot.meta.json');
 const client=new pg.Client({connectionString:databaseUrl});
+const gitSha=()=>{
+  if(process.env.ML_EXPORT_GIT_SHA)return process.env.ML_EXPORT_GIT_SHA;
+  try{return execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8',stdio:['ignore','pipe','ignore']}).trim();}
+  catch{return process.env.RAILWAY_GIT_COMMIT_SHA??'unknown';}
+};
 const numeric=(value)=>typeof value==='number'&&Number.isFinite(value)?value:'';
 const bool=(value)=>value===true?'true':value===false?'false':'';
 const csv=(value)=>{const text=value===null||value===undefined?'':String(value);return /[",\n\r]/.test(text)?`"${text.replaceAll('"','""')}"`:text;};
@@ -34,8 +39,8 @@ try{
   const maxAt=Math.max(...observations.map(row=>Number(row.detected_at)).filter(Number.isFinite));
   const candleRows=Number.isFinite(minAt)?(await client.query(`
     SELECT chain,pool,extract(epoch FROM at)*1000 AS at,open,high,low,close,volume
-    FROM chart_candles WHERE at >= to_timestamp($1/1000)-interval '5 minutes'
-      AND at < to_timestamp($2/1000)+interval '25 hours' ORDER BY at
+    FROM chart_candles WHERE at >= to_timestamp($1::double precision/1000)-interval '5 minutes'
+      AND at < to_timestamp($2::double precision/1000)+interval '25 hours' ORDER BY at
   `,[minAt,maxAt])).rows:[];
   const histories=new Map();
   for(const row of candleRows){const key=`${row.chain}:${row.pool}`,items=histories.get(key)??[];items.push({at:Number(row.at),open:Number(row.open),high:Number(row.high),low:Number(row.low),close:Number(row.close),volume:Number(row.volume)});histories.set(key,items);}
@@ -65,7 +70,7 @@ try{
   const sourceCounts=Object.fromEntries([...new Set(rows.map(row=>row.source))].sort().map(source=>[source,rows.filter(row=>row.source===source).length]));
   const labelCounts=Object.fromEntries(['tp1','stop','ambiguous','unresolved'].map(label=>[label,rows.filter(row=>label==='unresolved'?!row.first_hit:row.first_hit===label).length]));
   await mkdir(outDir,{recursive:true});await writeFile(csvPath,csvText);
-  const metadata={schema_version:1,exported_at:new Date().toISOString(),git_sha:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),csv_sha256:createHash('sha256').update(csvText).digest('hex'),rows:rows.length,source_counts:sourceCounts,label_counts:labelCounts,table_counts:tableCounts,feature_columns:ML_FEATURE_IDS,cost_scenarios_bps:[200,300],notes:['One canonical row per research observation; delivered signals use source=alert.','Controls are eligible non-signal candles from the selected-pair universe.','Wallet-watch, Telegram identity, and credentials are never queried.']};
+  const metadata={schema_version:1,exported_at:new Date().toISOString(),git_sha:gitSha(),csv_sha256:createHash('sha256').update(csvText).digest('hex'),rows:rows.length,source_counts:sourceCounts,label_counts:labelCounts,table_counts:tableCounts,feature_columns:ML_FEATURE_IDS,cost_scenarios_bps:[200,300],notes:['One canonical row per research observation; delivered signals use source=alert.','Controls are eligible non-signal candles from the selected-pair universe.','Wallet-watch, Telegram identity, and credentials are never queried.']};
   await writeFile(metaPath,JSON.stringify(metadata,null,2)+'\n');
   console.log(`Wrote ${rows.length} rows to ${csvPath}`);
   console.log(`SHA-256 ${metadata.csv_sha256}`);
