@@ -168,7 +168,10 @@ def _strategy_metrics(values: pd.DataFrame) -> dict:
 def strategy_returns(oof: pd.DataFrame, cost_bps: int = 200) -> dict[str, pd.DataFrame]:
     immediate = "immediate_sim_net_return_pct" if cost_bps == 200 else "immediate_sim_net_return_pct_300bps"
     confirmed = "greenHold_sim_net_return_pct" if cost_bps == 200 else "greenHold_sim_net_return_pct_300bps"
-    base = oof.loc[oof["fold"].notna() & oof[immediate].notna()].copy()
+    # Legacy strategy comparisons remain signal-only now that the path export
+    # also simulates controls for the dedicated signal-vs-control study.
+    signal_rows = oof["source"].ne("control") if "source" in oof else pd.Series(True, index=oof.index)
+    base = oof.loc[oof["fold"].notna() & signal_rows & oof[immediate].notna()].copy()
     def values(mask, column):
         result = base[["id", "day", "detected_at"]].copy()
         result["exit_at"] = pd.to_numeric(base["immediate_sim_exit_at" if column == immediate else "greenHold_sim_exit_at"], errors="coerce")

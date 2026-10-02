@@ -50,6 +50,7 @@ def make_synthetic(path: str | Path, rows: int = 600) -> Path:
         record = {
             "id": f"synthetic-{index:05d}", "source": source, "chain": chain, "token": token,
             "pool": f"synthetic-pool-{token_number:04d}", "support_anchor": support_anchor, "detected_at": detected_ms,
+            "entry_price": 100.0, "support_stop_price": 100.0 * (1-risk/100), "atr14": atr,
             "volumeRatio": volume_ratio, "riskPct": risk, "atrPct": atr, "bodyPct": body,
             "closePosition": close, "upperWickPct": upper, "lowerWickPct": lower,
             "ema9SlopePct": ema9_slope, "ema21SlopePct": ema21_slope,

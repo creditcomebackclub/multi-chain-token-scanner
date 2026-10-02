@@ -14,7 +14,7 @@ RULES = [
     "rule_immediate", "rule_greenHold", "rule_greenHoldVolume", "rule_qualityUnique",
     "screen_hold", "screen_greenHold", "screen_holdVolume", "screen_greenHoldVolume",
 ]
-IDENTITY = ["id", "source", "chain", "token", "pool", "support_anchor", "detected_at"]
+IDENTITY = ["id", "source", "chain", "token", "pool", "support_anchor", "detected_at", "entry_price", "support_stop_price", "atr14"]
 SIMULATION = [
     f"{entry}_{field}"
     for entry in ("immediate", "greenHold")
@@ -36,7 +36,7 @@ def load_dataset(path: str | Path) -> pd.DataFrame:
     missing = sorted(set(REQUIRED) - set(frame.columns))
     if missing:
         raise ValueError(f"dataset is missing columns: {', '.join(missing)}")
-    for column in FEATURES + ["support_anchor", "detected_at", "label_resolved_at", "y"] + [c for c in SIMULATION if c.endswith(("_pct", "_at", "_300bps"))]:
+    for column in FEATURES + ["support_anchor", "detected_at", "entry_price", "support_stop_price", "atr14", "label_resolved_at", "y"] + [c for c in SIMULATION if c.endswith(("_pct", "_at", "_300bps"))]:
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
     for column in RULES:
         frame[column] = frame[column].astype("string").str.lower().map({"true": True, "false": False}).astype("boolean")
