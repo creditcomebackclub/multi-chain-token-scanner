@@ -69,21 +69,21 @@ export const screenDefinitions=[
 ];
 
 export type SimulatedTrade={chain:string;token:string;entryAt:number;exitAt:number;status:'tp2'|'runner_breakeven'|'stop'|'time'|'open';grossReturnPct:number;netReturnPct:number;resolved:boolean};
-export type ExitStructure='half_runner'|'single_tp'|'trailing';
-export type ExitStop='support'|'fixed3'|'fixed5'|'atr1_5';
+export type ExitStructure='half_runner'|'single_tp'|'trailing'|'fat_tail'|'ladder';
+export type ExitStop='support'|'fixed3'|'fixed5'|'fixed10'|'fixed20'|'atr1_5'|'atr2';
 export type PathExitReason='tp'|'tp2'|'trail'|'stop'|'breakeven'|'time'|'open';
 export type PathSimulationConfig={
   structure:ExitStructure;tp1Pct:number;stop:ExitStop;timeHours:number;costBps:number;
-  supportStop:number|null;atr14:number|null;
+  supportStop:number|null;atr14:number|null;trailPct?:number;
 };
 export type PathSimulationInput={chain:string;token:string;entryAt:number;entryPrice:number;candles:Candle[]};
 export type PathSimulationResult={chain:string;token:string;entryAt:number;exitAt:number;exitReason:PathExitReason;
-  grossReturnPct:number;netReturnPct:number;resolved:boolean;barsHeld:number;exitPrice:number};
+  grossReturnPct:number;netReturnPct:number;resolved:boolean;barsHeld:number;exitPrice:number;maxMultiple:number};
 
 const pathResult=(input:PathSimulationInput,config:PathSimulationConfig,exitAt:number,exitReason:PathExitReason,
-  grossReturnPct:number,resolved:boolean,barsHeld:number,exitPrice:number):PathSimulationResult=>({
+  grossReturnPct:number,resolved:boolean,barsHeld:number,exitPrice:number,maxPrice=exitPrice):PathSimulationResult=>({
   chain:input.chain,token:input.token,entryAt:input.entryAt,exitAt,exitReason,grossReturnPct,
-  netReturnPct:grossReturnPct-config.costBps/100,resolved,barsHeld,exitPrice,
+  netReturnPct:grossReturnPct-config.costBps/100,resolved,barsHeld,exitPrice,maxMultiple:maxPrice/input.entryPrice,
 });
 
 /**
@@ -96,6 +96,9 @@ export function simulatePath(input:PathSimulationInput,config:PathSimulationConf
   const stop=config.stop==='support'?config.supportStop
     :config.stop==='fixed3'?entry*.97
     :config.stop==='fixed5'?entry*.95
+    :config.stop==='fixed10'?entry*.90
+    :config.stop==='fixed20'?entry*.80
+    :config.stop==='atr2'&&finite(config.atr14)&&config.atr14!>0?entry-2*config.atr14!
     :finite(config.atr14)&&config.atr14!>0?entry-1.5*config.atr14!:null;
   if(!finite(entry)||entry<=0||!finite(entryAt)||!finite(stop)||stop!<=0||stop!>=entry)return null;
   if(config.structure==='trailing'&&(!finite(config.atr14)||config.atr14!<=0))return null;
@@ -103,33 +106,55 @@ export function simulatePath(input:PathSimulationInput,config:PathSimulationConf
   const end=entryAt+config.timeHours*60*60*1000;
   const path=input.candles.filter(c=>c.at>=entryAt&&c.at<end).sort((a,b)=>a.at-b.at);
   if(!path.length)return null;
+  if(config.structure==='fat_tail'||config.structure==='ladder'){
+    const trailPct=config.structure==='ladder'?40:config.trailPct;
+    if(!finite(trailPct)||trailPct!<=0||trailPct!>=100)return null;
+    let highWater=entry,trail=stop!,soldAtTwo=false,soldAtFive=false,realized=0,remaining=1;
+    for(let index=0;index<path.length;index++){
+      const candle=path[index],bars=index+1,activeStop=config.structure==='fat_tail'||soldAtTwo?trail:stop!;
+      if(candle.low<=activeStop){
+        const exit=Math.min(activeStop,candle.open),gross=realized+remaining*(exit/entry-1)*100;
+        return pathResult(input,config,candle.at+BAR,config.structure==='fat_tail'||soldAtTwo?'trail':'stop',gross,true,bars,exit,highWater);
+      }
+      highWater=Math.max(highWater,candle.high);
+      if(config.structure==='ladder'){
+        if(!soldAtTwo&&candle.high>=entry*2){soldAtTwo=true;realized+=25;remaining=.75;}
+        if(!soldAtFive&&candle.high>=entry*5){soldAtTwo=true;soldAtFive=true;realized+=100;remaining=.5;}
+      }
+      if(config.structure==='fat_tail'||soldAtTwo)trail=Math.max(trail,highWater*(1-trailPct!/100));
+    }
+    const last=path.at(-1)!,complete=last.at+BAR>=end,gross=realized+remaining*(last.close/entry-1)*100;
+    return pathResult(input,config,last.at+BAR,complete?'time':'open',gross,complete,path.length,last.close,highWater);
+  }
   let activated=false,trail=stop!;
+  let highWater=entry;
   for(let index=0;index<path.length;index++){
     const candle=path[index],bars=index+1;
+    highWater=Math.max(highWater,candle.high);
     if(!activated){
-      if(candle.low<=stop!){const exit=Math.min(stop!,candle.open);return pathResult(input,config,candle.at+BAR,'stop',(exit/entry-1)*100,true,bars,exit);}
+      if(candle.low<=stop!){const exit=Math.min(stop!,candle.open);return pathResult(input,config,candle.at+BAR,'stop',(exit/entry-1)*100,true,bars,exit,highWater);}
       if(candle.high<target)continue;
-      if(config.structure==='single_tp')return pathResult(input,config,candle.at+BAR,'tp',config.tp1Pct,true,bars,target);
+      if(config.structure==='single_tp')return pathResult(input,config,candle.at+BAR,'tp',config.tp1Pct,true,bars,target,highWater);
       activated=true;
       if(config.structure==='half_runner'){
-        if(candle.low<=entry)return pathResult(input,config,candle.at+BAR,'breakeven',config.tp1Pct/2,true,bars,entry);
-        if(candle.high>=tp2)return pathResult(input,config,candle.at+BAR,'tp2',config.tp1Pct*1.5,true,bars,tp2);
+        if(candle.low<=entry)return pathResult(input,config,candle.at+BAR,'breakeven',config.tp1Pct/2,true,bars,entry,highWater);
+        if(candle.high>=tp2)return pathResult(input,config,candle.at+BAR,'tp2',config.tp1Pct*1.5,true,bars,tp2,highWater);
       }else{
         trail=Math.max(stop!,candle.high-config.atr14!);
-        if(candle.low<=trail){const runner=trail;const gross=(config.tp1Pct+(runner/entry-1)*100)/2;return pathResult(input,config,candle.at+BAR,'trail',gross,true,bars,runner);}
+        if(candle.low<=trail){const runner=trail;const gross=(config.tp1Pct+(runner/entry-1)*100)/2;return pathResult(input,config,candle.at+BAR,'trail',gross,true,bars,runner,highWater);}
       }
     }else if(config.structure==='half_runner'){
-      if(candle.low<=entry)return pathResult(input,config,candle.at+BAR,'breakeven',config.tp1Pct/2,true,bars,entry);
-      if(candle.high>=tp2)return pathResult(input,config,candle.at+BAR,'tp2',config.tp1Pct*1.5,true,bars,tp2);
+      if(candle.low<=entry)return pathResult(input,config,candle.at+BAR,'breakeven',config.tp1Pct/2,true,bars,entry,highWater);
+      if(candle.high>=tp2)return pathResult(input,config,candle.at+BAR,'tp2',config.tp1Pct*1.5,true,bars,tp2,highWater);
     }else{
       const activeTrail=trail;
-      if(candle.low<=activeTrail){const runner=Math.min(activeTrail,candle.open);const gross=(config.tp1Pct+(runner/entry-1)*100)/2;return pathResult(input,config,candle.at+BAR,'trail',gross,true,bars,runner);}
+      if(candle.low<=activeTrail){const runner=Math.min(activeTrail,candle.open);const gross=(config.tp1Pct+(runner/entry-1)*100)/2;return pathResult(input,config,candle.at+BAR,'trail',gross,true,bars,runner,highWater);}
       trail=Math.max(trail,candle.high-config.atr14!);
     }
   }
   const last=path.at(-1)!,complete=last.at+BAR>=end;
   const gross=activated&&config.structure!=='single_tp'?(config.tp1Pct+(last.close/entry-1)*100)/2:(last.close/entry-1)*100;
-  return pathResult(input,config,last.at+BAR,complete?'time':'open',gross,complete,path.length,last.close);
+  return pathResult(input,config,last.at+BAR,complete?'time':'open',gross,complete,path.length,last.close,highWater);
 }
 
 /** Exact adapter for the currently deployed immediate half-TP1 shadow rule. */

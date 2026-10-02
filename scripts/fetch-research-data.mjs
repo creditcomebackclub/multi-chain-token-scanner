@@ -29,7 +29,7 @@ async function download(url,file){
 
 export async function fetchResearchData({metaPath=META_PATH,dataDir=DATA_DIR}={}){
   const meta=JSON.parse(await readFile(metaPath,'utf8'));
-  const artifacts=[meta.paths,meta.exit_grid];
+  const artifacts=[meta.paths,meta.exit_grid,meta.edge_exit_grid].filter(Boolean);
   await mkdir(dataDir,{recursive:true});
   for(const artifact of artifacts){
     const file=path.join(dataDir,artifact.file),expected=artifact.uncompressed_csv_sha256;
