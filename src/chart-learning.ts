@@ -69,6 +69,76 @@ export const screenDefinitions=[
 ];
 
 export type SimulatedTrade={chain:string;token:string;entryAt:number;exitAt:number;status:'tp2'|'runner_breakeven'|'stop'|'time'|'open';grossReturnPct:number;netReturnPct:number;resolved:boolean};
+export type ExitStructure='half_runner'|'single_tp'|'trailing';
+export type ExitStop='support'|'fixed3'|'fixed5'|'atr1_5';
+export type PathExitReason='tp'|'tp2'|'trail'|'stop'|'breakeven'|'time'|'open';
+export type PathSimulationConfig={
+  structure:ExitStructure;tp1Pct:number;stop:ExitStop;timeHours:number;costBps:number;
+  supportStop:number|null;atr14:number|null;
+};
+export type PathSimulationInput={chain:string;token:string;entryAt:number;entryPrice:number;candles:Candle[]};
+export type PathSimulationResult={chain:string;token:string;entryAt:number;exitAt:number;exitReason:PathExitReason;
+  grossReturnPct:number;netReturnPct:number;resolved:boolean;barsHeld:number;exitPrice:number};
+
+const pathResult=(input:PathSimulationInput,config:PathSimulationConfig,exitAt:number,exitReason:PathExitReason,
+  grossReturnPct:number,resolved:boolean,barsHeld:number,exitPrice:number):PathSimulationResult=>({
+  chain:input.chain,token:input.token,entryAt:input.entryAt,exitAt,exitReason,grossReturnPct,
+  netReturnPct:grossReturnPct-config.costBps/100,resolved,barsHeld,exitPrice,
+});
+
+/**
+ * Point-in-time OHLC path simulator used by offline research. Candles must begin
+ * with the next tradable bar and entryPrice must be that bar's open. Stops are
+ * checked before targets on every bar, including activation bars.
+ */
+export function simulatePath(input:PathSimulationInput,config:PathSimulationConfig):PathSimulationResult|null{
+  const {entryPrice:entry,entryAt}=input;
+  const stop=config.stop==='support'?config.supportStop
+    :config.stop==='fixed3'?entry*.97
+    :config.stop==='fixed5'?entry*.95
+    :finite(config.atr14)&&config.atr14!>0?entry-1.5*config.atr14!:null;
+  if(!finite(entry)||entry<=0||!finite(entryAt)||!finite(stop)||stop!<=0||stop!>=entry)return null;
+  if(config.structure==='trailing'&&(!finite(config.atr14)||config.atr14!<=0))return null;
+  const target=entry*(1+config.tp1Pct/100),tp2=entry*(1+config.tp1Pct/50);
+  const end=entryAt+config.timeHours*60*60*1000;
+  const path=input.candles.filter(c=>c.at>=entryAt&&c.at<end).sort((a,b)=>a.at-b.at);
+  if(!path.length)return null;
+  let activated=false,trail=stop!;
+  for(let index=0;index<path.length;index++){
+    const candle=path[index],bars=index+1;
+    if(!activated){
+      if(candle.low<=stop!){const exit=Math.min(stop!,candle.open);return pathResult(input,config,candle.at+BAR,'stop',(exit/entry-1)*100,true,bars,exit);}
+      if(candle.high<target)continue;
+      if(config.structure==='single_tp')return pathResult(input,config,candle.at+BAR,'tp',config.tp1Pct,true,bars,target);
+      activated=true;
+      if(config.structure==='half_runner'){
+        if(candle.low<=entry)return pathResult(input,config,candle.at+BAR,'breakeven',config.tp1Pct/2,true,bars,entry);
+        if(candle.high>=tp2)return pathResult(input,config,candle.at+BAR,'tp2',config.tp1Pct*1.5,true,bars,tp2);
+      }else{
+        trail=Math.max(stop!,candle.high-config.atr14!);
+        if(candle.low<=trail){const runner=trail;const gross=(config.tp1Pct+(runner/entry-1)*100)/2;return pathResult(input,config,candle.at+BAR,'trail',gross,true,bars,runner);}
+      }
+    }else if(config.structure==='half_runner'){
+      if(candle.low<=entry)return pathResult(input,config,candle.at+BAR,'breakeven',config.tp1Pct/2,true,bars,entry);
+      if(candle.high>=tp2)return pathResult(input,config,candle.at+BAR,'tp2',config.tp1Pct*1.5,true,bars,tp2);
+    }else{
+      const activeTrail=trail;
+      if(candle.low<=activeTrail){const runner=Math.min(activeTrail,candle.open);const gross=(config.tp1Pct+(runner/entry-1)*100)/2;return pathResult(input,config,candle.at+BAR,'trail',gross,true,bars,runner);}
+      trail=Math.max(trail,candle.high-config.atr14!);
+    }
+  }
+  const last=path.at(-1)!,complete=last.at+BAR>=end;
+  const gross=activated&&config.structure!=='single_tp'?(config.tp1Pct+(last.close/entry-1)*100)/2:(last.close/entry-1)*100;
+  return pathResult(input,config,last.at+BAR,complete?'time':'open',gross,complete,path.length,last.close);
+}
+
+/** Exact adapter for the currently deployed immediate half-TP1 shadow rule. */
+export function simulateCurrentPath(row:LearningRow,costBps:number):PathSimulationResult|null{
+  const result=simulatePath({chain:row.chain,token:row.token,entryAt:row.at,entryPrice:row.setup.price,candles:row.futureCandles??[]},{
+    structure:'half_runner',tp1Pct:5,stop:'support',timeHours:24,costBps,supportStop:row.setup.lower*.995,atr14:row.setup.features?.atr14??null,
+  });
+  return result;
+}
 export const shadowDefinitions=[
   {id:'immediate',label:'Immediate signal entry',confirm:false,dedupe:false,pass:(_r:LearningRow)=>true},
   {id:'greenHold',label:'Next candle green + holds within 0.5%',confirm:true,dedupe:false,pass:(r:LearningRow)=>!!r.confirmationCandle&&r.confirmationCandle.close>=r.setup.price*.995&&r.confirmationCandle.close>r.confirmationCandle.open},

@@ -18,9 +18,9 @@ from . import SEED
 from .data import FEATURES
 from .validation import Fold
 
-def _logistic(c: float = 1.0) -> Pipeline:
+def _logistic(c: float = 1.0, features: list[str] = FEATURES) -> Pipeline:
     return Pipeline([
-        ("prep", ColumnTransformer([("numeric", Pipeline([("impute", SimpleImputer(strategy="median")), ("scale", StandardScaler())]), FEATURES)])),
+        ("prep", ColumnTransformer([("numeric", Pipeline([("impute", SimpleImputer(strategy="median")), ("scale", StandardScaler())]), features)])),
         ("model", LogisticRegression(C=c, penalty="l2", max_iter=2_000, random_state=SEED)),
     ])
 
@@ -35,24 +35,24 @@ def _time_splits(n: int, wanted: int = 3):
     count = min(wanted, max(0, n // 20 - 1))
     return TimeSeriesSplit(n_splits=count) if count >= 2 else None
 
-def tune_logistic_c(train: pd.DataFrame) -> float:
+def tune_logistic_c(train: pd.DataFrame, features: list[str] = FEATURES) -> float:
     cv = _time_splits(len(train))
     if cv is None:
         return 1.0
     best = (float("inf"), 1.0)
-    x, y = train[FEATURES], train["y"].astype(int)
+    x, y = train[features], train["y"].astype(int)
     for c in (.01, .1, 1.0, 10.0):
         losses = []
         for left, right in cv.split(x):
             if y.iloc[left].nunique() < 2:
                 continue
-            model = _logistic(c).fit(x.iloc[left], y.iloc[left])
+            model = _logistic(c, features).fit(x.iloc[left], y.iloc[left])
             losses.append(brier_score_loss(y.iloc[right], model.predict_proba(x.iloc[right])[:, 1]))
         if losses and np.mean(losses) < best[0]:
             best = (float(np.mean(losses)), c)
     return best[1]
 
-def _inner_predictions(train: pd.DataFrame, c: float) -> pd.Series:
+def _inner_predictions(train: pd.DataFrame, c: float, features: list[str] = FEATURES) -> pd.Series:
     predictions = pd.Series(np.nan, index=train.index, dtype=float)
     cv = _time_splits(len(train))
     if cv is None:
@@ -62,12 +62,12 @@ def _inner_predictions(train: pd.DataFrame, c: float) -> pd.Series:
         y = ordered.iloc[left]["y"].astype(int)
         if y.nunique() < 2:
             continue
-        model = _logistic(c).fit(ordered.iloc[left][FEATURES], y)
-        predictions.loc[ordered.iloc[right].index] = model.predict_proba(ordered.iloc[right][FEATURES])[:, 1]
+        model = _logistic(c, features).fit(ordered.iloc[left][features], y)
+        predictions.loc[ordered.iloc[right].index] = model.predict_proba(ordered.iloc[right][features])[:, 1]
     return predictions
 
-def choose_threshold(train: pd.DataFrame, c: float) -> float:
-    predictions = _inner_predictions(train, c)
+def choose_threshold(train: pd.DataFrame, c: float, features: list[str] = FEATURES) -> float:
+    predictions = _inner_predictions(train, c, features)
     returns = pd.to_numeric(train["immediate_sim_net_return_pct"], errors="coerce")
     best = (-float("inf"), .5)
     for threshold in np.arange(.35, .81, .05):
@@ -91,18 +91,18 @@ def choose_screen(train: pd.DataFrame) -> str:
             best = candidate
     return best[1]
 
-def _calibrated(estimator, train: pd.DataFrame, method: str):
+def _calibrated(estimator, train: pd.DataFrame, method: str, features: list[str] = FEATURES):
     cv = _time_splits(len(train))
     if cv is None:
         return None
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            return CalibratedClassifierCV(estimator, method=method, cv=cv).fit(train[FEATURES], train["y"].astype(int))
+            return CalibratedClassifierCV(estimator, method=method, cv=cv).fit(train[features], train["y"].astype(int))
     except ValueError:
         return None
 
-def out_of_fold_predictions(frame: pd.DataFrame, folds: list[Fold]) -> tuple[pd.DataFrame, dict]:
+def out_of_fold_predictions(frame: pd.DataFrame, folds: list[Fold], features: list[str] = FEATURES) -> tuple[pd.DataFrame, dict]:
     columns = ["pred_baseline", "pred_logistic", "pred_hgb", "pred_logistic_platt", "pred_hgb_isotonic"]
     output = frame.copy()
     for column in columns:
@@ -114,32 +114,32 @@ def out_of_fold_predictions(frame: pd.DataFrame, folds: list[Fold]) -> tuple[pd.
     for fold in folds:
         train, test = frame.loc[fold.train].sort_values("detected_at"), frame.loc[fold.test].sort_values("detected_at")
         y = train["y"].astype(int)
-        c = tune_logistic_c(train)
-        logistic = _logistic(c).fit(train[FEATURES], y)
-        boosting = _boosting(len(train)).fit(train[FEATURES], y) if len(train) >= 80 else None
+        c = tune_logistic_c(train, features)
+        logistic = _logistic(c, features).fit(train[features], y)
+        boosting = _boosting(len(train)).fit(train[features], y) if len(train) >= 80 else None
         output.loc[test.index, "pred_baseline"] = float(y.mean())
-        output.loc[test.index, "pred_logistic"] = logistic.predict_proba(test[FEATURES])[:, 1]
+        output.loc[test.index, "pred_logistic"] = logistic.predict_proba(test[features])[:, 1]
         if boosting is not None:
-            output.loc[test.index, "pred_hgb"] = boosting.predict_proba(test[FEATURES])[:, 1]
-        platt = _calibrated(_logistic(c), train, "sigmoid")
-        isotonic = _calibrated(_boosting(len(train)), train, "isotonic") if boosting is not None and len(train) >= 150 else None
-        output.loc[test.index, "pred_logistic_platt"] = platt.predict_proba(test[FEATURES])[:, 1] if platt else output.loc[test.index, "pred_logistic"]
-        output.loc[test.index, "pred_hgb_isotonic"] = isotonic.predict_proba(test[FEATURES])[:, 1] if isotonic else output.loc[test.index, "pred_hgb"]
+            output.loc[test.index, "pred_hgb"] = boosting.predict_proba(test[features])[:, 1]
+        platt = _calibrated(_logistic(c, features), train, "sigmoid", features)
+        isotonic = _calibrated(_boosting(len(train)), train, "isotonic", features) if boosting is not None and len(train) >= 150 else None
+        output.loc[test.index, "pred_logistic_platt"] = platt.predict_proba(test[features])[:, 1] if platt else output.loc[test.index, "pred_logistic"]
+        output.loc[test.index, "pred_hgb_isotonic"] = isotonic.predict_proba(test[features])[:, 1] if isotonic else output.loc[test.index, "pred_hgb"]
         output.loc[test.index, "fold"] = fold.number
-        output.loc[test.index, "model_threshold"] = choose_threshold(train, c)
+        output.loc[test.index, "model_threshold"] = choose_threshold(train, c, features)
         output.loc[test.index, "selected_screen"] = choose_screen(train)
         if boosting is not None and test["y"].nunique() == 2:
-            result = permutation_importance(boosting, test[FEATURES], test["y"].astype(int), scoring="neg_brier_score", n_repeats=10, random_state=SEED)
-            importances.append(pd.Series(result.importances_mean, index=FEATURES))
-    details = {"folds": len(folds), "permutation_importance": pd.concat(importances, axis=1).mean(axis=1).sort_values(ascending=False).to_dict() if importances else {}}
+            result = permutation_importance(boosting, test[features], test["y"].astype(int), scoring="neg_brier_score", n_repeats=10, random_state=SEED)
+            importances.append(pd.Series(result.importances_mean, index=features))
+    details = {"folds": len(folds), "features": features, "permutation_importance": pd.concat(importances, axis=1).mean(axis=1).sort_values(ascending=False).to_dict() if importances else {}}
     return output, details
 
-def coefficient_intervals(frame: pd.DataFrame, n_boot: int = 1_000) -> pd.DataFrame:
+def coefficient_intervals(frame: pd.DataFrame, n_boot: int = 1_000, features: list[str] = FEATURES) -> pd.DataFrame:
     data = frame.loc[frame["y"].isin([0, 1])].copy()
     if len(data) < 40 or data["y"].nunique() < 2:
-        return pd.DataFrame(index=FEATURES, columns=["coefficient", "ci_low", "ci_high"], dtype=float)
-    c = tune_logistic_c(data.sort_values("detected_at"))
-    model = _logistic(c).fit(data[FEATURES], data["y"].astype(int))
+        return pd.DataFrame(index=features, columns=["coefficient", "ci_low", "ci_high"], dtype=float)
+    c = tune_logistic_c(data.sort_values("detected_at"), features)
+    model = _logistic(c, features).fit(data[features], data["y"].astype(int))
     estimate = model.named_steps["model"].coef_[0]
     rng = np.random.default_rng(SEED)
     blocks = [block for _, block in data.groupby("day")]
@@ -149,8 +149,8 @@ def coefficient_intervals(frame: pd.DataFrame, n_boot: int = 1_000) -> pd.DataFr
         if sampled["y"].nunique() < 2:
             continue
         try:
-            draws.append(_logistic(c).fit(sampled[FEATURES], sampled["y"].astype(int)).named_steps["model"].coef_[0])
+            draws.append(_logistic(c, features).fit(sampled[features], sampled["y"].astype(int)).named_steps["model"].coef_[0])
         except ValueError:
             continue
     values = np.asarray(draws)
-    return pd.DataFrame({"coefficient": estimate, "ci_low": np.quantile(values, .025, axis=0) if len(values) else np.nan, "ci_high": np.quantile(values, .975, axis=0) if len(values) else np.nan}, index=FEATURES)
+    return pd.DataFrame({"coefficient": estimate, "ci_low": np.quantile(values, .025, axis=0) if len(values) else np.nan, "ci_high": np.quantile(values, .975, axis=0) if len(values) else np.nan}, index=features)

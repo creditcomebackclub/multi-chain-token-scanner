@@ -6,9 +6,17 @@ It has no wallet integration, transaction signing, or trade execution. An automa
 
 ## Research: does the signal have an edge?
 
+### Key findings
+
+- **No tested exit rule has positive out-of-sample expectancy.** Nested exit selection produced **+0.012%** per signal trade (95% day-block CI: **−4.000% to +0.996%**, 13 trades); controls and every top-decile model-ranked control population were negative.
+- Signal/alert candles reached TP1 before the stop **46.5%** of the time versus **60.5%** for eligible same-pair control candles, a **−14.0 percentage-point** difference (95% day-block CI: −30.5 to −3.1).
+- The current exit's observed positive-return rate was **31.2%**, far below the **69.2%** rate required to break even under its observed +2.75% average win and −6.17% average loss. Both rates in this repo count trades with a net-positive simulated return: the strategy table's **53.3%** covers only the **30** later, out-of-fold trades, while **31.2%** covers all **64** immediate-entry simulations, so the gap reflects which period is measured (the earlier trades fared far worse), not a different definition.
+- Removing `riskPct` retained **96.6%** of logistic AUC and **91.6%** of gradient-boosting AUC. Stop-distance geometry contributed to ranking, but did not explain all of it.
+- Naive shuffled validation reported **0.178 Brier** versus **0.252** under purged walk-forward validation, a **0.074-point optimism gap**.
+
 The portfolio research question is whether point-in-time 5-minute setup features predict TP1-first outcomes better than the hand-written rules after modeled costs. The offline Python study uses expanding-window validation, purges overlapping 24-hour label windows, preserves post-test embargoes in later training folds, applies a 24-hour pre-test gap, keeps repeated token/support groups together, and selects model thresholds and calibration only inside training folds.
 
-**Headline result from the September 26–October 1 production snapshot:** the present signal does not establish a cost-adjusted edge. The dataset has 9,331 observations and 8,045 resolved labels, but only 66 signal/alert rows and 29 out-of-fold signal trades with simulator returns. Taking every eligible trade produced −1.454% mean net return per trade (95% day-block bootstrap CI: −2.462% to −0.649%) at 200 bps modeled costs. The `qualityUnique` rule was the only positive rule at +0.752%, but it had only 4 trades, its CI spanned −8.492% to +3.833%, and it fell to −0.248% at 300 bps. The model-filtered strategy returned −1.330%; its paired difference from `qualityUnique` was −2.082 percentage points with a CI of −3.403 to +7.162, so the model is not distinguishable from the best rule. See [the full research report](research/ml/reports/REPORT.md) and the five notebooks in `research/ml/notebooks/`.
+**Headline result from the September 26–October 2 production snapshot:** the present signal does not establish a cost-adjusted edge, and changing exits did not rescue it. The dataset has 10,095 observations and 8,801 resolved labels. All 432 exit-grid cells were negative in-sample on signals; nested fold selection was nearly flat out of sample, but its interval spans large losses and gains. See [the full research report](research/ml/reports/REPORT.md) and the five notebooks in `research/ml/notebooks/`.
 
 ```sh
 npm run research:export
@@ -17,7 +25,15 @@ research/ml/.venv/bin/pip install -r research/ml/requirements.txt
 research/ml/.venv/bin/python research/ml/run_all.py
 ```
 
-The export contains one canonical row per research observation, labels delivered setups as `source=alert` rather than duplicating them, and omits wallet-watch, Telegram identity, and credential data. All simulated returns—including the 300 bps sensitivity—come from the TypeScript trade simulator used by the scanner's existing shadow analysis. Models remain offline and cannot affect live alerts.
+The committed snapshot and report do not require the large research artifacts for tests or CI. Fetch the production candle paths and precomputed exit grid from the `research-snapshot-2026-10-02` GitHub Release when reproducing the exit study:
+
+```sh
+npm run research:fetch-data
+```
+
+The command downloads both files and verifies their decompressed SHA-256 hashes against `research/ml/data/snapshot.meta.json`. `exit-grid.csv.gz` is derived from the committed `snapshot.csv`, `paths.csv.gz`, and the TypeScript path simulator, so it is regenerable from the path artifact; the release includes it as a convenience to avoid repeating the 432-cell simulation.
+
+The export contains one canonical row per research observation with an exact next-bar entry candle, labels delivered setups as `source=alert` rather than duplicating them, and omits wallet-watch, Telegram identity, and credential data. It writes compressed 24-hour OHLCV paths and the 432-cell exit-grid output. The TypeScript path simulator exactly reproduces the existing shadow simulator under the current rule before testing alternatives. Models remain offline and cannot affect live alerts.
 
 ## Free shortlist mode
 

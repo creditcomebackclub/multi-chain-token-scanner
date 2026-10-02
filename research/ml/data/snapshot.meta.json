@@ -1,26 +1,46 @@
 {
-  "schema_version": 1,
-  "exported_at": "2026-10-01T15:44:24.867Z",
-  "git_sha": "cac86a75a75f75b31c0b7723f43ac37b80f2d5fc",
-  "csv_sha256": "fe34ae58b45a7b2a75c07257277983ad8a4084321d089a1c12a6de446f180856",
-  "rows": 9331,
+  "schema_version": 2,
+  "exported_at": "2026-10-02T01:35:25.100Z",
+  "git_sha": "66b2e9d",
+  "csv_sha256": "416f4f04858e9476486a22aff2b0ef229f1dd245d93fb3ab15141a27f982bbd7",
+  "rows": 10095,
+  "observations_skipped_without_entry_bar": 166,
+  "paths": {
+    "file": "paths.csv.gz",
+    "release": "research-snapshot-2026-10-02",
+    "rows": 1716295,
+    "ids": 10095,
+    "uncompressed_csv_sha256": "a54bb166a0fcde090bb49e9ae9eba40cfca043e811f8d258bfcf101047d0b1b2",
+    "window_hours": 24
+  },
+  "exit_grid": {
+    "file": "exit-grid.csv.gz",
+    "release": "research-snapshot-2026-10-02",
+    "rows": 4247208,
+    "uncompressed_csv_sha256": "728d66f344e58c83dad9ab6e472fc69269c797c21c5512d1b123024d7df2b279",
+    "cells": 432
+  },
+  "parity": {
+    "rows_checked": 10095,
+    "status": "passed"
+  },
   "source_counts": {
     "alert": 4,
-    "control": 9265,
-    "signal": 62
+    "control": 10031,
+    "signal": 60
   },
   "label_counts": {
-    "tp1": 4812,
-    "stop": 3233,
-    "ambiguous": 250,
-    "unresolved": 1036
+    "tp1": 5317,
+    "stop": 3484,
+    "ambiguous": 262,
+    "unresolved": 1032
   },
   "table_counts": {
-    "chart_research_observations": 9331,
-    "chart_research_outcomes": 9272,
-    "chart_signals": 87,
+    "chart_research_observations": 10261,
+    "chart_research_outcomes": 10196,
+    "chart_signals": 93,
     "chart_setup_alerts": 12,
-    "chart_candles": 40683
+    "chart_candles": 45081
   },
   "feature_columns": [
     "volumeRatio",
@@ -40,11 +60,16 @@
     "supportTouchAgeBars"
   ],
   "cost_scenarios_bps": [
+    100,
     200,
     300
   ],
   "notes": [
-    "One canonical row per research observation; delivered signals use source=alert.",
+    "One canonical row per research observation with an exact next-bar entry candle; delivered signals use source=alert.",
+    "Observations without the exact entry bar are excluded rather than simulated with a later bar.",
+    "Every path begins at the next tradable five-minute bar at detected_at; grid entries use that bar open.",
+    "Download release assets with npm run research:fetch-data; hashes cover decompressed CSV content.",
+    "exit-grid.csv.gz is derived from snapshot.csv plus paths.csv.gz and the TypeScript path simulator, so it can be regenerated from the path artifact.",
     "Controls are eligible non-signal candles from the selected-pair universe.",
     "Wallet-watch, Telegram identity, and credentials are never queried."
   ]

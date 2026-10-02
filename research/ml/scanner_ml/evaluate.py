@@ -7,6 +7,9 @@ from sklearn.metrics import average_precision_score, brier_score_loss, log_loss,
 
 from . import SEED
 
+MIN_BOOTSTRAP_BLOCKS = 3
+MIN_BOOTSTRAP_ROWS = 5
+
 def classification_metrics(y, probability) -> dict:
     y = np.asarray(y, dtype=int)
     probability = np.clip(np.asarray(probability, dtype=float), 1e-8, 1 - 1e-8)
@@ -23,6 +26,16 @@ def _sample_days(frame: pd.DataFrame, rng: np.random.Generator) -> pd.DataFrame:
     blocks = [block for _, block in frame.groupby("day", sort=True)]
     return pd.concat([blocks[index] for index in rng.integers(0, len(blocks), len(blocks))], ignore_index=True)
 
+def _bootstrap_support(frame: pd.DataFrame) -> tuple[bool, int, int]:
+    blocks = int(frame["day"].dropna().nunique()) if "day" in frame else 0
+    rows = int(len(frame))
+    return blocks >= MIN_BOOTSTRAP_BLOCKS and rows >= MIN_BOOTSTRAP_ROWS, blocks, rows
+
+def interval_text(low: float, high: float, blocks: int, digits: int = 3, scale: float = 1.0) -> str:
+    if not np.isfinite(low) or not np.isfinite(high) or np.isclose(low, high):
+        return f"not estimable ({blocks} blocks)"
+    return f"[{low * scale:.{digits}f}, {high * scale:.{digits}f}]"
+
 def metric_intervals(frame: pd.DataFrame, prediction: str, n_boot: int = 1_000) -> dict:
     data = frame.loc[frame["y"].isin([0, 1]) & frame[prediction].notna(), ["y", prediction, "day"]]
     estimate = classification_metrics(data["y"], data[prediction])
@@ -35,6 +48,84 @@ def metric_intervals(frame: pd.DataFrame, prediction: str, n_boot: int = 1_000) 
             if np.isfinite(value):
                 draws[key].append(value)
     return {key: {"estimate": value, "ci_low": float(np.quantile(draws[key], .025)) if draws[key] else math.nan, "ci_high": float(np.quantile(draws[key], .975)) if draws[key] else math.nan} for key, value in estimate.items()}
+
+def paired_metric_differences(frame: pd.DataFrame, left: str, right: str, n_boot: int = 1_000) -> dict:
+    """Return left-minus-right metric differences using paired day resamples."""
+    data = frame.loc[frame["y"].isin([0, 1]) & frame[left].notna() & frame[right].notna(), ["y", left, right, "day"]]
+    left_metrics = classification_metrics(data["y"], data[left])
+    right_metrics = classification_metrics(data["y"], data[right])
+    supported, blocks, rows = _bootstrap_support(data)
+    draws = {key: [] for key in left_metrics}
+    if supported:
+        rng = np.random.default_rng(SEED + 31)
+        for _ in range(n_boot):
+            sample = _sample_days(data, rng)
+            lhs = classification_metrics(sample["y"], sample[left])
+            rhs = classification_metrics(sample["y"], sample[right])
+            for key in draws:
+                difference = lhs[key] - rhs[key]
+                if np.isfinite(difference):
+                    draws[key].append(float(difference))
+    return {
+        key: {
+            "left": left_metrics[key], "right": right_metrics[key],
+            "difference": left_metrics[key] - right_metrics[key],
+            "ci_low": float(np.quantile(draws[key], .025)) if draws[key] else math.nan,
+            "ci_high": float(np.quantile(draws[key], .975)) if draws[key] else math.nan,
+            "blocks": blocks, "rows": rows,
+        }
+        for key in left_metrics
+    }
+
+def signal_control_rate_difference(frame: pd.DataFrame, n_boot: int = 2_000) -> dict:
+    data = frame.loc[frame["y"].isin([0, 1]), ["y", "source", "day"]].copy()
+    data["is_signal"] = data["source"].ne("control")
+    signal = data.loc[data.is_signal, "y"]
+    control = data.loc[~data.is_signal, "y"]
+    estimate = float(signal.mean() - control.mean()) if len(signal) and len(control) else math.nan
+    supported, blocks, rows = _bootstrap_support(data)
+    draws: list[float] = []
+    if supported:
+        rng = np.random.default_rng(SEED + 71)
+        for _ in range(n_boot):
+            sample = _sample_days(data, rng)
+            lhs = sample.loc[sample.is_signal, "y"]
+            rhs = sample.loc[~sample.is_signal, "y"]
+            if len(lhs) and len(rhs):
+                draws.append(float(lhs.mean() - rhs.mean()))
+    return {
+        "signal_rate": float(signal.mean()) if len(signal) else math.nan,
+        "control_rate": float(control.mean()) if len(control) else math.nan,
+        "difference": estimate,
+        "ci_low": float(np.quantile(draws, .025)) if draws else math.nan,
+        "ci_high": float(np.quantile(draws, .975)) if draws else math.nan,
+        "blocks": blocks, "rows": rows,
+    }
+
+def signal_control_return_difference(frame: pd.DataFrame, column: str, n_boot: int = 2_000) -> dict | None:
+    data = frame.loc[frame[column].notna(), [column, "source", "day"]].copy()
+    data["is_signal"] = data["source"].ne("control")
+    signal = data.loc[data.is_signal, column]
+    control = data.loc[~data.is_signal, column]
+    if signal.empty or control.empty:
+        return None
+    supported, blocks, rows = _bootstrap_support(data)
+    draws: list[float] = []
+    if supported:
+        rng = np.random.default_rng(SEED + 79)
+        for _ in range(n_boot):
+            sample = _sample_days(data, rng)
+            lhs = sample.loc[sample.is_signal, column]
+            rhs = sample.loc[~sample.is_signal, column]
+            if len(lhs) and len(rhs):
+                draws.append(float(lhs.mean() - rhs.mean()))
+    return {
+        "signal_mean": float(signal.mean()), "control_mean": float(control.mean()),
+        "difference": float(signal.mean() - control.mean()),
+        "ci_low": float(np.quantile(draws, .025)) if draws else math.nan,
+        "ci_high": float(np.quantile(draws, .975)) if draws else math.nan,
+        "blocks": blocks, "rows": rows,
+    }
 
 def reliability_table(y, probability, max_bins: int = 10) -> pd.DataFrame:
     data = pd.DataFrame({"y": y, "p": probability}).dropna()
@@ -77,7 +168,10 @@ def _strategy_metrics(values: pd.DataFrame) -> dict:
 def strategy_returns(oof: pd.DataFrame, cost_bps: int = 200) -> dict[str, pd.DataFrame]:
     immediate = "immediate_sim_net_return_pct" if cost_bps == 200 else "immediate_sim_net_return_pct_300bps"
     confirmed = "greenHold_sim_net_return_pct" if cost_bps == 200 else "greenHold_sim_net_return_pct_300bps"
-    base = oof.loc[oof["fold"].notna() & oof[immediate].notna()].copy()
+    # Legacy strategy comparisons remain signal-only now that the path export
+    # also simulates controls for the dedicated signal-vs-control study.
+    signal_rows = oof["source"].ne("control") if "source" in oof else pd.Series(True, index=oof.index)
+    base = oof.loc[oof["fold"].notna() & signal_rows & oof[immediate].notna()].copy()
     def values(mask, column):
         result = base[["id", "day", "detected_at"]].copy()
         result["exit_at"] = pd.to_numeric(base["immediate_sim_exit_at" if column == immediate else "greenHold_sim_exit_at"], errors="coerce")
@@ -107,17 +201,23 @@ def strategy_comparison(oof: pd.DataFrame, cost_bps: int = 200, n_boot: int = 2_
     rng = np.random.default_rng(SEED + cost_bps)
     for name, values in returns.items():
         metrics = _strategy_metrics(values)
+        trade_rows = values.loc[values["return"].notna()].copy()
+        supported, blocks, _ = _bootstrap_support(trade_rows)
         expectancy, win_rate = [], []
-        for _ in range(n_boot):
-            sample = _sample_days(values, rng)
-            sample_metrics = _strategy_metrics(sample)
-            if np.isfinite(sample_metrics["expectancy_pct"]): expectancy.append(sample_metrics["expectancy_pct"])
-            if np.isfinite(sample_metrics["win_rate"]): win_rate.append(sample_metrics["win_rate"])
+        if supported:
+            for _ in range(n_boot):
+                sample = _sample_days(trade_rows, rng)
+                sample_metrics = _strategy_metrics(sample)
+                if np.isfinite(sample_metrics["expectancy_pct"]): expectancy.append(sample_metrics["expectancy_pct"])
+                if np.isfinite(sample_metrics["win_rate"]): win_rate.append(sample_metrics["win_rate"])
+        expectancy_low = float(np.quantile(expectancy, .025)) if expectancy else math.nan
+        expectancy_high = float(np.quantile(expectancy, .975)) if expectancy else math.nan
+        win_low = float(np.quantile(win_rate, .025)) if win_rate else math.nan
+        win_high = float(np.quantile(win_rate, .975)) if win_rate else math.nan
         rows.append({"strategy": name, **metrics,
-          "expectancy_ci_low": float(np.quantile(expectancy, .025)) if expectancy else math.nan,
-          "expectancy_ci_high": float(np.quantile(expectancy, .975)) if expectancy else math.nan,
-          "win_rate_ci_low": float(np.quantile(win_rate, .025)) if win_rate else math.nan,
-          "win_rate_ci_high": float(np.quantile(win_rate, .975)) if win_rate else math.nan})
+          "day_blocks": blocks,
+          "expectancy_ci_95": interval_text(expectancy_low, expectancy_high, blocks),
+          "win_rate_ci_95": interval_text(win_low, win_high, blocks)})
     table = pd.DataFrame(rows).set_index("strategy")
     rule_names = [name for name in table.index if name.startswith("rule_")]
     best_rule = table.loc[rule_names, "expectancy_pct"].idxmax() if rule_names else None
@@ -125,11 +225,20 @@ def strategy_comparison(oof: pd.DataFrame, cost_bps: int = 200, n_boot: int = 2_
     if best_rule:
         left, right = returns["model_filtered"], returns[best_rule]
         paired = left.merge(right, on=["id", "day", "detected_at"], suffixes=("_model", "_rule"))
-        for _ in range(n_boot):
-            sample = _sample_days(paired, rng)
-            model_mean = sample["return_model"].dropna().mean()
-            rule_mean = sample["return_rule"].dropna().mean()
-            if np.isfinite(model_mean) and np.isfinite(rule_mean): differences.append(float(model_mean - rule_mean))
+        useful_days = paired.groupby("day").filter(lambda group: group["return_model"].notna().any() and group["return_rule"].notna().any())
+        supported, paired_blocks, paired_rows = _bootstrap_support(useful_days)
+        if supported:
+            for _ in range(n_boot):
+                sample = _sample_days(useful_days, rng)
+                model_mean = sample["return_model"].dropna().mean()
+                rule_mean = sample["return_rule"].dropna().mean()
+                if np.isfinite(model_mean) and np.isfinite(rule_mean): differences.append(float(model_mean - rule_mean))
+    else:
+        paired_blocks = 0
+        paired_rows = 0
+    difference_low = float(np.quantile(differences, .025)) if differences else math.nan
+    difference_high = float(np.quantile(differences, .975)) if differences else math.nan
     paired_result = {"best_rule": best_rule, "difference": float(table.loc["model_filtered", "expectancy_pct"] - table.loc[best_rule, "expectancy_pct"]) if best_rule else math.nan,
-      "ci_low": float(np.quantile(differences, .025)) if differences else math.nan, "ci_high": float(np.quantile(differences, .975)) if differences else math.nan}
+      "ci_low": difference_low, "ci_high": difference_high, "blocks": paired_blocks, "rows": paired_rows,
+      "ci_95": interval_text(difference_low, difference_high, paired_blocks)}
     return table, paired_result, returns
