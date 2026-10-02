@@ -76,3 +76,54 @@ def power_analysis(returns, simulations: int = 2_000) -> tuple[dict, pd.DataFram
     rates = [rate for rate in np.arange(math.ceil((p0 + .03) * 100) / 100, min(.96, p0 + .26), .03)]
     win_rows = [{"true_win_rate": float(rate), "analytic_n": analytic_required_n(p0, float(rate)), "monte_carlo_n": monte_carlo_required_n(p0, float(rate), empirical, simulations=simulations)} for rate in rates]
     return breakeven, pd.DataFrame(win_rows), expectancy_power(empirical, simulations=simulations)
+
+def analytic_payoff_sensitivity(tp2_share: float, targets=(5, 8, 10, 15), risk_caps=(3, 5, 8), costs_bps=(100, 200, 300)) -> pd.DataFrame:
+    """Hypothetical breakeven rates implied by the live simulator's payoff shape.
+
+    The simulator sells half at TP1 and either exits the runner at breakeven
+    (0.5 * TP1 gross) or at TP2=2*TP1 (1.5 * TP1 gross). A structural stop is
+    conservatively placed at the stated maximum risk cap. Costs are charged
+    once to the whole round trip, matching simulateTrade.
+    """
+    rows = []
+    share = float(np.clip(tp2_share, 0, 1))
+    for target in targets:
+        average_gross_win = target * (.5 + share)
+        for risk_cap in risk_caps:
+            for cost_bps in costs_bps:
+                cost_pct = cost_bps / 100
+                net_win = average_gross_win - cost_pct
+                loss = risk_cap + cost_pct
+                rate = loss / (net_win + loss) if net_win > 0 else 1.0
+                rows.append({
+                    "tp1_pct": target, "max_risk_pct": risk_cap, "cost_bps": cost_bps,
+                    "average_net_win_pct": net_win, "net_loss_pct": -loss,
+                    "breakeven_win_rate": rate,
+                })
+    return pd.DataFrame(rows)
+
+def empirical_payoff_sensitivity(frame: pd.DataFrame, risk_caps=(3, 5, 8), costs_bps=(100, 200, 300)) -> pd.DataFrame:
+    """Sensitivity supported by the committed +5%/+10% simulator outputs."""
+    rows = []
+    base = frame.loc[frame["immediate_sim_net_return_pct"].notna() & frame["riskPct"].gt(0)].copy()
+    for risk_cap in risk_caps:
+        eligible = base.loc[base["riskPct"] <= risk_cap]
+        for cost_bps in costs_bps:
+            if cost_bps == 300:
+                returns = pd.to_numeric(eligible["immediate_sim_net_return_pct_300bps"], errors="coerce")
+            else:
+                # The committed simulator stores 200 and 300 bps. Because the
+                # cost is a single additive round-trip deduction, 100 bps is
+                # exactly the 200 bps result plus one percentage point.
+                returns = pd.to_numeric(eligible["immediate_sim_net_return_pct"], errors="coerce") + (200 - cost_bps) / 100
+            returns = returns.dropna()
+            payoff = breakeven_win_rate(returns)
+            rows.append({
+                "tp1_pct": 5, "max_risk_pct": risk_cap, "cost_bps": cost_bps,
+                "trades": len(returns), "observed_win_rate": float((returns > 0).mean()) if len(returns) else math.nan,
+                "expectancy_pct": float(returns.mean()) if len(returns) else math.nan,
+                "average_net_win_pct": payoff["average_net_win_pct"],
+                "average_net_loss_pct": payoff["average_net_loss_pct"],
+                "breakeven_win_rate": payoff["breakeven_win_rate"],
+            })
+    return pd.DataFrame(rows)

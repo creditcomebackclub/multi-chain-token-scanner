@@ -6,9 +6,17 @@ It has no wallet integration, transaction signing, or trade execution. An automa
 
 ## Research: does the signal have an edge?
 
+### Key findings
+
+- Signal/alert candles reached TP1 before the stop **47.7%** of the time versus **59.9%** for eligible same-pair control candles, a **−12.2 percentage-point** difference (95% day-block CI: −26.3 to −1.4).
+- The observed positive-return rate was **33.3%**, far below the **72.8%** rate required to break even under the observed +2.9% average win and −7.7% average loss.
+- Removing `riskPct` reduced logistic AUC from **0.676 to 0.657** and gradient-boosting AUC from **0.714 to 0.656**. Most ranking AUC survived, but probability quality deteriorated, confirming that stop-distance geometry contributed materially without explaining all ranking performance.
+- Naive shuffled validation reported **0.182 Brier** versus **0.260** under purged walk-forward validation, a **0.078-point optimism gap**.
+- The model-filtered strategy trailed the best observed rule by **2.082 percentage points**; the paired interval is not estimable because both strategies overlap in only one usable day block, and the best rule itself has only four trades.
+
 The portfolio research question is whether point-in-time 5-minute setup features predict TP1-first outcomes better than the hand-written rules after modeled costs. The offline Python study uses expanding-window validation, purges overlapping 24-hour label windows, preserves post-test embargoes in later training folds, applies a 24-hour pre-test gap, keeps repeated token/support groups together, and selects model thresholds and calibration only inside training folds.
 
-**Headline result from the September 26–October 1 production snapshot:** the present signal does not establish a cost-adjusted edge. The dataset has 9,331 observations and 8,045 resolved labels, but only 66 signal/alert rows and 29 out-of-fold signal trades with simulator returns. Taking every eligible trade produced −1.454% mean net return per trade (95% day-block bootstrap CI: −2.462% to −0.649%) at 200 bps modeled costs. The `qualityUnique` rule was the only positive rule at +0.752%, but it had only 4 trades, its CI spanned −8.492% to +3.833%, and it fell to −0.248% at 300 bps. The model-filtered strategy returned −1.330%; its paired difference from `qualityUnique` was −2.082 percentage points with a CI of −3.403 to +7.162, so the model is not distinguishable from the best rule. See [the full research report](research/ml/reports/REPORT.md) and the five notebooks in `research/ml/notebooks/`.
+**Headline result from the September 26–October 1 production snapshot:** the present signal does not establish a cost-adjusted edge. The dataset has 9,331 observations and 8,045 resolved labels, but only 66 signal/alert rows and 29 out-of-fold signal trades with simulator returns. Taking every eligible trade produced −1.454% mean net return per trade (95% day-block bootstrap CI: −2.462% to −0.649%) at 200 bps modeled costs. The `qualityUnique` rule was the only positive rule at +0.752%, but it had only four trades, its interval is not estimable from two day blocks, and it fell to −0.248% at 300 bps. See [the full research report](research/ml/reports/REPORT.md) and the five notebooks in `research/ml/notebooks/`.
 
 ```sh
 npm run research:export
