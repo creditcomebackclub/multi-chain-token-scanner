@@ -1,0 +1,54 @@
+import { createHash } from 'node:crypto';
+import { createReadStream, createWriteStream } from 'node:fs';
+import { mkdir, readFile, rename, rm } from 'node:fs/promises';
+import path from 'node:path';
+import { Readable, Writable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { createGunzip } from 'node:zlib';
+
+const OWNER='creditcomebackclub';
+const REPO='multi-chain-token-scanner';
+const DATA_DIR=path.resolve('research/ml/data');
+const META_PATH=path.join(DATA_DIR,'snapshot.meta.json');
+
+export async function uncompressedSha256(file){
+  const hash=createHash('sha256');
+  await pipeline(createReadStream(file),createGunzip(),new Writable({write(chunk,_encoding,done){hash.update(chunk);done();}}));
+  return hash.digest('hex');
+}
+
+export async function verifyArtifact(file,expected){
+  try{return (await uncompressedSha256(file))===expected;}catch{return false;}
+}
+
+async function download(url,file){
+  const response=await fetch(url,{signal:AbortSignal.timeout(10*60*1000)});
+  if(!response.ok||!response.body)throw new Error(`Download failed: HTTP ${response.status} ${url}`);
+  await pipeline(Readable.fromWeb(response.body),createWriteStream(file));
+}
+
+export async function fetchResearchData({metaPath=META_PATH,dataDir=DATA_DIR}={}){
+  const meta=JSON.parse(await readFile(metaPath,'utf8'));
+  const artifacts=[meta.paths,meta.exit_grid];
+  await mkdir(dataDir,{recursive:true});
+  for(const artifact of artifacts){
+    const file=path.join(dataDir,artifact.file),expected=artifact.uncompressed_csv_sha256;
+    if(await verifyArtifact(file,expected)){console.log(`${artifact.file}: verified`);continue;}
+    const tag=artifact.release;
+    if(!tag)throw new Error(`Missing release tag for ${artifact.file} in ${metaPath}`);
+    const partial=`${file}.part`;
+    await rm(partial,{force:true});
+    const url=`https://github.com/${OWNER}/${REPO}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(artifact.file)}`;
+    console.log(`${artifact.file}: downloading ${tag}`);
+    try{
+      await download(url,partial);
+      if(!await verifyArtifact(partial,expected))throw new Error(`${artifact.file}: SHA-256 mismatch after download`);
+      await rename(partial,file);
+      console.log(`${artifact.file}: verified`);
+    }catch(error){await rm(partial,{force:true});throw error;}
+  }
+}
+
+if(import.meta.url===new URL(process.argv[1],`file://${process.cwd()}/`).href){
+  fetchResearchData().catch(error=>{console.error(error instanceof Error?error.message:String(error));process.exitCode=1;});
+}
