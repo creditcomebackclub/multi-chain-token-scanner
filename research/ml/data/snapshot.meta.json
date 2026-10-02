@@ -1,46 +1,54 @@
 {
-  "schema_version": 2,
-  "exported_at": "2026-10-02T01:35:25.100Z",
-  "git_sha": "66b2e9d",
-  "csv_sha256": "416f4f04858e9476486a22aff2b0ef229f1dd245d93fb3ab15141a27f982bbd7",
-  "rows": 10095,
-  "observations_skipped_without_entry_bar": 166,
+  "schema_version": 3,
+  "exported_at": "2026-10-02T14:54:13.150Z",
+  "git_sha": "569f4a9",
+  "csv_sha256": "1aea41b8e94dde453f19395984a5495527a6ff5e5a643cd515f61f034b4c02d6",
+  "rows": 11275,
+  "observations_skipped_without_entry_bar": 190,
   "paths": {
     "file": "paths.csv.gz",
-    "release": "research-snapshot-2026-10-02",
-    "rows": 1716295,
-    "ids": 10095,
-    "uncompressed_csv_sha256": "a54bb166a0fcde090bb49e9ae9eba40cfca043e811f8d258bfcf101047d0b1b2",
-    "window_hours": 24
+    "rows": 3829352,
+    "ids": 11275,
+    "uncompressed_csv_sha256": "6de17c8e98a26ce4d9fe8804a3d236942bca3f1818a38ccc4fc16c146c49f1a7",
+    "window_hours": 168,
+    "release": "research-edge-phase1-2026-10-02"
   },
   "exit_grid": {
     "file": "exit-grid.csv.gz",
-    "release": "research-snapshot-2026-10-02",
-    "rows": 4247208,
-    "uncompressed_csv_sha256": "728d66f344e58c83dad9ab6e472fc69269c797c21c5512d1b123024d7df2b279",
-    "cells": 432
+    "rows": 4731804,
+    "uncompressed_csv_sha256": "8a7e45917704f76db4a00f6d0f12e9614244c55f098a67f4002b5a890a1dd3f1",
+    "cells": 432,
+    "release": "research-edge-phase1-2026-10-02"
+  },
+  "edge_exit_grid": {
+    "file": "edge-exit-grid.csv.gz",
+    "rows": 1577052,
+    "uncompressed_csv_sha256": "46a1faa38d9a4871aefb17932b8e5f888549cf0528a978ae897bc70ee9a9eab9",
+    "cells": 144,
+    "release": "research-edge-phase1-2026-10-02"
   },
   "parity": {
-    "rows_checked": 10095,
+    "rows_checked": 11275,
     "status": "passed"
   },
   "source_counts": {
-    "alert": 4,
-    "control": 10031,
-    "signal": 60
+    "alert": 5,
+    "control": 11200,
+    "signal": 70
   },
   "label_counts": {
-    "tp1": 5317,
-    "stop": 3484,
-    "ambiguous": 262,
-    "unresolved": 1032
+    "tp1": 5868,
+    "stop": 4024,
+    "ambiguous": 290,
+    "unresolved": 1093
   },
   "table_counts": {
-    "chart_research_observations": 10261,
-    "chart_research_outcomes": 10196,
-    "chart_signals": 93,
-    "chart_setup_alerts": 12,
-    "chart_candles": 45081
+    "chart_research_observations": 11471,
+    "chart_research_outcomes": 11405,
+    "chart_signals": 106,
+    "chart_setup_alerts": 14,
+    "chart_candles": 51726,
+    "wallet_watch_alerts": 218
   },
   "feature_columns": [
     "volumeRatio",
@@ -59,6 +67,23 @@
     "supportTestCount",
     "supportTouchAgeBars"
   ],
+  "context_columns": [
+    "pool_created_at",
+    "pool_age_hours",
+    "discovery_fetched_at",
+    "discovery_liquidity",
+    "discovery_volume_5m",
+    "discovery_volume_24h",
+    "discovery_buys_5m",
+    "discovery_sells_5m",
+    "discovery_buyers_5m",
+    "discovery_sellers_5m",
+    "signal_market_at",
+    "signal_liquidity",
+    "signal_fdv",
+    "signal_market_cap",
+    "security_status"
+  ],
   "cost_scenarios_bps": [
     100,
     200,
@@ -68,9 +93,20 @@
     "One canonical row per research observation with an exact next-bar entry candle; delivered signals use source=alert.",
     "Observations without the exact entry bar are excluded rather than simulated with a later bar.",
     "Every path begins at the next tradable five-minute bar at detected_at; grid entries use that bar open.",
-    "Download release assets with npm run research:fetch-data; hashes cover decompressed CSV content.",
-    "exit-grid.csv.gz is derived from snapshot.csv plus paths.csv.gz and the TypeScript path simulator, so it can be regenerated from the path artifact.",
+    "The edge grid contains preregistered fat-tail and ladder exits; incomplete horizons remain unresolved.",
+    "Both exit grids are derived from snapshot.csv, paths.csv.gz, and the TypeScript simulator and can be regenerated from paths.",
     "Controls are eligible non-signal candles from the selected-pair universe.",
-    "Wallet-watch, Telegram identity, and credentials are never queried."
-  ]
+    "Wallet addresses, Telegram identity, and credentials are never exported."
+  ],
+  "path_coverage": {
+    "rows": 11275,
+    "path_present": 11275,
+    "path_present_pct": 100.0,
+    "complete_24h": 5730,
+    "complete_24h_pct": 50.82039911308204,
+    "complete_72h": 1543,
+    "complete_72h_pct": 13.685144124168513,
+    "complete_168h": 0,
+    "complete_168h_pct": 0.0
+  }
 }

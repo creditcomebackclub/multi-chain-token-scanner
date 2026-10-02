@@ -14,6 +14,7 @@ import { learningFlags, ML_FEATURE_IDS, simulateCurrentPath, simulatePath, simul
 const databaseUrl=process.env.DATABASE_URL;
 if(!databaseUrl)throw new Error('DATABASE_URL is required');
 const HOUR=60*60*1000;
+const releaseTag=process.env.ML_RELEASE_TAG??'research-edge-phase1-2026-10-02';
 const outDir=path.resolve('research/ml/data');
 const csvPath=path.join(outDir,'snapshot.csv'),metaPath=path.join(outDir,'snapshot.meta.json'),pathsPath=path.join(outDir,'paths.csv.gz'),gridPath=path.join(outDir,'exit-grid.csv.gz'),edgeGridPath=path.join(outDir,'edge-exit-grid.csv.gz');
 const client=new pg.Client({connectionString:databaseUrl});
@@ -67,6 +68,7 @@ try{
   await writeLine(gridWriter,'id,rule_id,structure,tp1_pct,stop,time_hours,cost_bps,net_return_pct,gross_return_pct,exit_reason,exit_at,bars_held,resolved\n');
   await writeLine(edgeGridWriter,'id,rule_id,structure,stop,trail_pct,time_hours,cost_bps,net_return_pct,gross_return_pct,exit_reason,exit_at,bars_held,resolved,max_multiple\n');
   const rows=[];let parityRows=0,skippedWithoutEntryBar=0;
+  const pathCoverage={rows:0,path_present:0,complete_24h:0,complete_72h:0,complete_168h:0};
   for(const record of observations){
     const at=Number(record.detected_at),data=record.data??{},features=data.features??{},setup=data.setup??null,outcome=record.outcome??null;
     const history=histories.get(`${record.chain}:${record.pool}`)??[];
@@ -76,6 +78,12 @@ try{
     const supportLower=setup?.lower??features.supportLower;
     const compatSetup=setup??{at,anchor:features.supportAnchor??at,lower:supportLower??NaN,upper:features.supportUpper??NaN,price:entryCandle?.open??NaN,ema9:features.ema9??NaN,ema21:features.ema21??NaN,sma50:features.sma50??NaN,volumeRatio:features.volumeRatio??NaN,features};
     const learningRow={at,chain:record.chain,token:record.token,symbol:String(data.pair?.symbol??'?'),decision:String(record.decision??''),setup:compatSetup,outcome:undefined,signalCandle,confirmationCandle,futureCandles};
+    pathCoverage.rows++;
+    const lastPathCandle=futureCandles.at(-1);
+    if(lastPathCandle){
+      pathCoverage.path_present++;
+      for(const hours of [24,72,168])if(lastPathCandle.at+BAR>=at+hours*HOUR)pathCoverage[`complete_${hours}h`]++;
+    }
     const immediate200=learningRow?simulateTrade(learningRow,false,200):null,immediate300=learningRow?simulateTrade(learningRow,false,300):null;
     const green200=learningRow?simulateTrade(learningRow,true,200):null,green300=learningRow?simulateTrade(learningRow,true,300):null;
     const flags=setup?learningFlags(learningRow):{};
@@ -123,7 +131,8 @@ try{
   const sourceCounts=Object.fromEntries([...new Set(rows.map(row=>row.source))].sort().map(source=>[source,rows.filter(row=>row.source===source).length]));
   const labelCounts=Object.fromEntries(['tp1','stop','ambiguous','unresolved'].map(label=>[label,rows.filter(row=>label==='unresolved'?!row.first_hit:row.first_hit===label).length]));
   await writeFile(csvPath,csvText);
-  const metadata={schema_version:3,exported_at:new Date().toISOString(),git_sha:gitSha(),csv_sha256:createHash('sha256').update(csvText).digest('hex'),rows:rows.length,observations_skipped_without_entry_bar:skippedWithoutEntryBar,paths:{file:'paths.csv.gz',rows:pathWriter.rows-1,ids:rows.length,uncompressed_csv_sha256:pathsSha256,window_hours:168},exit_grid:{file:'exit-grid.csv.gz',rows:gridWriter.rows-1,uncompressed_csv_sha256:gridSha256,cells:structures.length*targets.length*stops.length*times.length*costs.length},edge_exit_grid:{file:'edge-exit-grid.csv.gz',rows:edgeGridWriter.rows-1,uncompressed_csv_sha256:edgeGridSha256,cells:edgeStops.length*edgeTimes.length*costs.length*(edgeTrails.length+1)},parity:{rows_checked:parityRows,status:'passed'},source_counts:sourceCounts,label_counts:labelCounts,table_counts:tableCounts,feature_columns:ML_FEATURE_IDS,context_columns:contextColumns,cost_scenarios_bps:costs,notes:['One canonical row per research observation with an exact next-bar entry candle; delivered signals use source=alert.','Observations without the exact entry bar are excluded rather than simulated with a later bar.','Every path begins at the next tradable five-minute bar at detected_at; grid entries use that bar open.','The edge grid contains preregistered fat-tail and ladder exits; incomplete horizons remain unresolved.','Controls are eligible non-signal candles from the selected-pair universe.','Wallet addresses, Telegram identity, and credentials are never exported.']};
+  const coveragePct=count=>pathCoverage.rows?100*count/pathCoverage.rows:null;
+  const metadata={schema_version:3,exported_at:new Date().toISOString(),git_sha:gitSha(),csv_sha256:createHash('sha256').update(csvText).digest('hex'),rows:rows.length,observations_skipped_without_entry_bar:skippedWithoutEntryBar,paths:{file:'paths.csv.gz',release:releaseTag,rows:pathWriter.rows-1,ids:rows.length,uncompressed_csv_sha256:pathsSha256,window_hours:168},path_coverage:{...pathCoverage,path_present_pct:coveragePct(pathCoverage.path_present),complete_24h_pct:coveragePct(pathCoverage.complete_24h),complete_72h_pct:coveragePct(pathCoverage.complete_72h),complete_168h_pct:coveragePct(pathCoverage.complete_168h)},exit_grid:{file:'exit-grid.csv.gz',release:releaseTag,rows:gridWriter.rows-1,uncompressed_csv_sha256:gridSha256,cells:structures.length*targets.length*stops.length*times.length*costs.length},edge_exit_grid:{file:'edge-exit-grid.csv.gz',release:releaseTag,rows:edgeGridWriter.rows-1,uncompressed_csv_sha256:edgeGridSha256,cells:edgeStops.length*edgeTimes.length*costs.length*(edgeTrails.length+1)},parity:{rows_checked:parityRows,status:'passed'},source_counts:sourceCounts,label_counts:labelCounts,table_counts:tableCounts,feature_columns:ML_FEATURE_IDS,context_columns:contextColumns,cost_scenarios_bps:costs,notes:['One canonical row per research observation with an exact next-bar entry candle; delivered signals use source=alert.','Observations without the exact entry bar are excluded rather than simulated with a later bar.','Every path begins at the next tradable five-minute bar at detected_at; grid entries use that bar open.','The edge grid contains preregistered fat-tail and ladder exits; incomplete horizons remain unresolved.','Both exit grids are derived from snapshot.csv, paths.csv.gz, and the TypeScript simulator and can be regenerated from paths.','Controls are eligible non-signal candles from the selected-pair universe.','Wallet addresses, Telegram identity, and credentials are never exported.']};
   await writeFile(metaPath,JSON.stringify(metadata,null,2)+'\n');
   console.log(`Wrote ${rows.length} rows to ${csvPath}`);
   console.log(`SHA-256 ${metadata.csv_sha256}`);
