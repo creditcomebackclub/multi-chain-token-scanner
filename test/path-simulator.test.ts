@@ -39,6 +39,28 @@ test('ATR trail activates after TP1 and exits the half runner pessimistically',(
   assert.equal(result?.exitReason,'trail');assert.ok(Math.abs((result?.grossReturnPct??0)-4.5)<1e-10);
 });
 
+test('fat-tail exit keeps the full position and trails from the high-water mark',()=>{
+  const result=simulatePath({chain:'solana',token:'x',entryAt:BAR,entryPrice:100,candles:[
+    candle(BAR,100,150,100,140),candle(2*BAR,140,160,100,115),
+  ]},{structure:'fat_tail',tp1Pct:0,stop:'fixed20',trailPct:30,timeHours:2,costBps:100,supportStop:null,atr14:2});
+  assert.equal(result?.exitReason,'trail');
+  assert.equal(result?.exitPrice,105);
+  assert.ok(Math.abs((result?.grossReturnPct??0)-5)<1e-10);
+  assert.ok(Math.abs((result?.netReturnPct??0)-4)<1e-10);
+  assert.equal(result?.maxMultiple,1.5);
+});
+
+test('ladder banks fixed quarters at 2x and 5x then trails the remaining half',()=>{
+  const result=simulatePath({chain:'bnb',token:'x',entryAt:BAR,entryPrice:100,candles:[
+    candle(BAR,100,210,100,200),candle(2*BAR,200,510,150,500),candle(3*BAR,500,520,190,200),
+  ]},{structure:'ladder',tp1Pct:0,stop:'fixed20',trailPct:40,timeHours:2,costBps:200,supportStop:null,atr14:2});
+  assert.equal(result?.exitReason,'trail');
+  assert.equal(result?.exitPrice,306);
+  assert.equal(result?.grossReturnPct,228);
+  assert.equal(result?.netReturnPct,226);
+  assert.equal(result?.maxMultiple,5.1);
+});
+
 test('committed production export passed current-rule parity on every snapshot row',()=>{
   const meta=JSON.parse(readFileSync(new URL('../research/ml/data/snapshot.meta.json',import.meta.url),'utf8'));
   const snapshot=readFileSync(new URL('../research/ml/data/snapshot.csv',import.meta.url),'utf8');

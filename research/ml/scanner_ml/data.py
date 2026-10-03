@@ -15,6 +15,12 @@ RULES = [
     "screen_hold", "screen_greenHold", "screen_holdVolume", "screen_greenHoldVolume",
 ]
 IDENTITY = ["id", "source", "chain", "token", "pool", "support_anchor", "detected_at", "entry_price", "support_stop_price", "atr14"]
+CONTEXT = [
+    "pool_created_at", "pool_age_hours", "discovery_fetched_at", "discovery_liquidity",
+    "discovery_volume_5m", "discovery_volume_24h", "discovery_buys_5m", "discovery_sells_5m",
+    "discovery_buyers_5m", "discovery_sellers_5m", "signal_market_at", "signal_liquidity",
+    "signal_fdv", "signal_market_cap", "security_status",
+]
 SIMULATION = [
     f"{entry}_{field}"
     for entry in ("immediate", "greenHold")
@@ -36,7 +42,11 @@ def load_dataset(path: str | Path) -> pd.DataFrame:
     missing = sorted(set(REQUIRED) - set(frame.columns))
     if missing:
         raise ValueError(f"dataset is missing columns: {', '.join(missing)}")
-    for column in FEATURES + ["support_anchor", "detected_at", "entry_price", "support_stop_price", "atr14", "label_resolved_at", "y"] + [c for c in SIMULATION if c.endswith(("_pct", "_at", "_300bps"))]:
+    for column in CONTEXT:
+        if column not in frame:
+            frame[column] = pd.NA
+    numeric_context = [column for column in CONTEXT if column != "security_status"]
+    for column in FEATURES + numeric_context + ["support_anchor", "detected_at", "entry_price", "support_stop_price", "atr14", "label_resolved_at", "y"] + [c for c in SIMULATION if c.endswith(("_pct", "_at", "_300bps"))]:
         frame[column] = pd.to_numeric(frame[column], errors="coerce")
     for column in RULES:
         frame[column] = frame[column].astype("string").str.lower().map({"true": True, "false": False}).astype("boolean")

@@ -8,15 +8,16 @@ It has no wallet integration, transaction signing, or trade execution. An automa
 
 ### Key findings
 
-- **No tested exit rule has positive out-of-sample expectancy.** Nested exit selection produced **+0.012%** per signal trade (95% day-block CI: **−4.000% to +0.996%**, 13 trades); controls and every top-decile model-ranked control population were negative.
-- Signal/alert candles reached TP1 before the stop **46.5%** of the time versus **60.5%** for eligible same-pair control candles, a **−14.0 percentage-point** difference (95% day-block CI: −30.5 to −3.1).
-- The current exit's observed positive-return rate was **31.2%**, far below the **69.2%** rate required to break even under its observed +2.75% average win and −6.17% average loss. Both rates in this repo count trades with a net-positive simulated return: the strategy table's **53.3%** covers only the **30** later, out-of-fold trades, while **31.2%** covers all **64** immediate-entry simulations, so the gap reflects which period is measured (the earlier trades fared far worse), not a different definition.
-- Removing `riskPct` retained **96.6%** of logistic AUC and **91.6%** of gradient-boosting AUC. Stop-distance geometry contributed to ranking, but did not explain all of it.
-- Naive shuffled validation reported **0.178 Brier** versus **0.252** under purged walk-forward validation, a **0.074-point optimism gap**.
+- **No tested legacy exit rule has positive out-of-sample expectancy.** Nested exit selection produced **+0.100%** per signal trade (95% day-block CI: **−0.603% to +0.847%**, 26 trades); controls and every top-decile model-ranked control population were negative.
+- Signal/alert candles reached TP1 before the stop **53.7%** of the time versus **59.4%** for eligible same-pair control candles, a **−5.6 percentage-point** difference (95% day-block CI: −23.4 to +11.0).
+- The current exit's observed positive-return rate was **38.7%**, far below the **73.4%** rate required to break even under its observed +2.22% average win and −6.13% average loss. Both rates in this repo count trades with a net-positive simulated return: the strategy table's **57.9%** covers only the **38** later, out-of-fold trades, while **38.7%** covers all **75** immediate-entry simulations, so the gap reflects which period is measured (the earlier trades fared far worse), not a different definition.
+- Removing `riskPct` retained **95.9%** of logistic AUC and **89.8%** of gradient-boosting AUC. Stop-distance geometry contributed to ranking, but did not explain all of it.
+- Naive shuffled validation reported **0.177 Brier** versus **0.224** under purged walk-forward validation, a **0.047-point optimism gap**.
+- **Phase 1 found no promotable memecoin edge.** All 126 fat-tail signal cells with enough resolved trades were negative in sample, but none of the still-open seven-day survivors has a complete seven-day path yet. The seven-day-purged comparison, pool-age selection, and order-flow models therefore need a longer forward history; the market-regime test is blocked on Phase 2 candles, and the matched avoid filter was not supported.
 
 The portfolio research question is whether point-in-time 5-minute setup features predict TP1-first outcomes better than the hand-written rules after modeled costs. The offline Python study uses expanding-window validation, purges overlapping 24-hour label windows, preserves post-test embargoes in later training folds, applies a 24-hour pre-test gap, keeps repeated token/support groups together, and selects model thresholds and calibration only inside training folds.
 
-**Headline result from the September 26–October 2 production snapshot:** the present signal does not establish a cost-adjusted edge, and changing exits did not rescue it. The dataset has 10,095 observations and 8,801 resolved labels. All 432 exit-grid cells were negative in-sample on signals; nested fold selection was nearly flat out of sample, but its interval spans large losses and gains. See [the full research report](research/ml/reports/REPORT.md) and the five notebooks in `research/ml/notebooks/`.
+**Headline result from the September 26–October 2 production snapshot:** the present signal does not establish a cost-adjusted edge, and changing exits did not rescue it. The dataset has 11,275 observations and 9,892 resolved labels. All 432 legacy exit-grid cells were negative in sample on signals; nested fold selection was nearly flat out of sample, but its interval includes losses and gains. The new 144-cell fat-tail grid likewise had no positive estimable signal cell, and the seven-day-purged test needs more calendar history. See [the full research report](research/ml/reports/REPORT.md) and the five notebooks in `research/ml/notebooks/`.
 
 ```sh
 npm run research:export
@@ -25,15 +26,15 @@ research/ml/.venv/bin/pip install -r research/ml/requirements.txt
 research/ml/.venv/bin/python research/ml/run_all.py
 ```
 
-The committed snapshot and report do not require the large research artifacts for tests or CI. Fetch the production candle paths and precomputed exit grid from the `research-snapshot-2026-10-02` GitHub Release when reproducing the exit study:
+The committed snapshot and report do not require the large research artifacts for tests or CI. Fetch the production candle paths and both precomputed exit grids from the `research-edge-phase1-2026-10-02` GitHub Release when reproducing the study:
 
 ```sh
 npm run research:fetch-data
 ```
 
-The command downloads both files and verifies their decompressed SHA-256 hashes against `research/ml/data/snapshot.meta.json`. `exit-grid.csv.gz` is derived from the committed `snapshot.csv`, `paths.csv.gz`, and the TypeScript path simulator, so it is regenerable from the path artifact; the release includes it as a convenience to avoid repeating the 432-cell simulation.
+The command downloads all three files and verifies their decompressed SHA-256 hashes against `research/ml/data/snapshot.meta.json`. `exit-grid.csv.gz` and `edge-exit-grid.csv.gz` are derived from the committed `snapshot.csv`, `paths.csv.gz`, and the TypeScript path simulator, so both are regenerable from the path artifact; the release includes them to avoid repeating the 432-cell and 144-cell simulations.
 
-The export contains one canonical row per research observation with an exact next-bar entry candle, labels delivered setups as `source=alert` rather than duplicating them, and omits wallet-watch, Telegram identity, and credential data. It writes compressed 24-hour OHLCV paths and the 432-cell exit-grid output. The TypeScript path simulator exactly reproduces the existing shadow simulator under the current rule before testing alternatives. Models remain offline and cannot affect live alerts.
+The export contains one canonical row per research observation with an exact next-bar entry candle, labels delivered setups as `source=alert` rather than duplicating them, and omits wallet addresses, Telegram identity, and credential data. It writes compressed seven-day OHLCV paths, the 432-cell legacy exit grid, and the 144-cell fat-tail/ladder grid. The TypeScript path simulator exactly reproduces the existing shadow simulator under the current rule before testing alternatives. Models remain offline and cannot affect live alerts.
 
 ## Free shortlist mode
 
@@ -53,7 +54,7 @@ npm run demo
 
 The demo uses clearly labeled synthetic provider fixtures. It shows a qualifying candidate, duplicate removal, the formatted alert, and a security-outage rejection. It does not contact any provider or send a message. Tests run a PostgreSQL 17 engine through PGlite without requiring Docker.
 
-Build verification: **114 tests passed** and TypeScript compilation passed. The free shortlist Docker build and Railway deployment have also been exercised with live public pool data on all five configured chains.
+Build verification: **121 tests passed** and TypeScript compilation passed. The free shortlist Docker build and Railway deployment have also been exercised with live public pool data on all five configured chains.
 
 ## Start full observation
 

@@ -16,5 +16,6 @@ research/ml/.pytest_cache/
 research/ml/data/synthetic.csv
 research/ml/data/paths.csv.gz
 research/ml/data/exit-grid.csv.gz
+research/ml/data/edge-exit-grid.csv.gz
 !research/ml/data/snapshot.csv
 !research/ml/data/snapshot.meta.json
