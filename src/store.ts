@@ -3,6 +3,7 @@ import { chartTradePlan } from './chart-trade-plan.js';
 import { BAR, CHART_RULE, type Candle, type ResearchFeatures, type Setup } from './chart-pattern.js';
 import { evaluateResearch, type ResearchOutcome } from './chart-research.js';
 import { analyzeChartLearning, type LearningRow } from './chart-learning.js';
+import { forwardShadowVariants, shadowMaturityCutoff, simulateForwardShadow, summarizeForwardShadow, type ShadowOutcome } from './shadow-research.js';
 import type { AlertOutcome, ManagedPosition, PositionEvent } from './chart-monitor.js';
 import pg from 'pg';
 import { randomUUID } from 'node:crypto';
@@ -72,6 +73,11 @@ export class Store {
         ON CONFLICT(id) DO UPDATE SET data=chart_research_observations.data||excluded.data,kind=excluded.kind,updated_at=clock_timestamp()`,
         [id,CHART_RULE,pair.chain,pair.token,pair.pool,date(features.at),setup?'signal':'control',JSON.stringify(data)]);
     });
+    // Shadow enrollment is repairable and must never make the live chart path fail.
+    await Promise.all(forwardShadowVariants.filter(variant=>features.at>=variant.lockedStart).map(variant=>this.db.query(`INSERT INTO shadow_variant_observations(variant_id,observation_id,population,at)
+      SELECT r.variant_id,$2,$3,$4 FROM shadow_variant_registry r
+      JOIN chart_research_observations o ON o.id=$2
+      WHERE r.variant_id=$1 AND o.created_at>=r.activated_at ON CONFLICT DO NOTHING`,[variant.id,id,setup?'signal':'control',date(features.at)]).catch(()=>undefined)));
   }
   async saveChartCandles(pair:DiscoveryCandidate,bars:Candle[]) {
     await this.db.query(`INSERT INTO chart_candles(chain,token,pool,at,open,high,low,close,volume)
@@ -186,6 +192,38 @@ export class Store {
     return{observations:rows.length,signals:rows.filter(r=>r.kind==='signal').length,controls:rows.filter(r=>r.kind==='control').length,measured:outcomes.length,complete:complete.length,
       tp1First:outcomes.filter(o=>o.firstHit==='tp1').length,stopFirst:outcomes.filter(o=>o.firstHit==='stop').length,ambiguous:outcomes.filter(o=>o.firstHit==='ambiguous').length,
       medianMfe:median(complete.map(o=>o.mfePct??NaN)),medianMae:median(complete.map(o=>o.maePct??NaN)),horizons};
+  }
+  async updateShadowVariantOutcomes(now:number,costBps:number) {
+    for(const variant of forwardShadowVariants)await this.db.query(`INSERT INTO shadow_variant_observations(variant_id,observation_id,population,at)
+      SELECT r.variant_id,o.id,o.kind,o.at FROM shadow_variant_registry r JOIN chart_research_observations o
+        ON o.at>=r.locked_start AND o.created_at>=r.activated_at
+      WHERE r.variant_id=$1 ON CONFLICT DO NOTHING`,[variant.id]);
+    const observations=(await this.db.query(`SELECT v.variant_id AS "variantId",v.observation_id AS id,v.population,
+      o.chain,o.token,o.pool,extract(epoch FROM o.at)*1000 AS at,o.data->'features' AS features
+      FROM shadow_variant_observations v JOIN chart_research_observations o ON o.id=v.observation_id
+      LEFT JOIN shadow_variant_outcomes r ON r.variant_id=v.variant_id AND r.observation_id=v.observation_id
+      WHERE r.observation_id IS NULL AND v.at<=$1 ORDER BY v.at LIMIT 1000`,[date(shadowMaturityCutoff(now))])).rows;
+    if(!observations.length)return 0;
+    const earliest=Math.min(...observations.map(row=>Number(row.at))),latest=Math.max(...observations.map(row=>Number(row.at)))+DAY+BAR;
+    const candles=(await this.db.query(`SELECT chain,pool,extract(epoch FROM at)*1000 AS at,open,high,low,close,volume
+      FROM chart_candles WHERE at>=$1 AND at<=$2 ORDER BY at`,[date(earliest),date(latest)])).rows
+      .map(row=>({...row,at:Number(row.at),open:Number(row.open),high:Number(row.high),low:Number(row.low),close:Number(row.close),volume:Number(row.volume)})) as (Candle&{chain:Chain;pool:string})[];
+    const updates:{variantId:string;id:string;data:ShadowOutcome}[]=[];
+    for(const row of observations){
+      const data=simulateForwardShadow(row.variantId,{at:Number(row.at),chain:String(row.chain),token:String(row.token),population:row.population,features:row.features},
+        candles.filter(c=>c.chain===row.chain&&c.pool===row.pool),costBps);
+      if(data?.resolved)updates.push({variantId:row.variantId,id:row.id,data});
+    }
+    if(updates.length)await this.db.query(`INSERT INTO shadow_variant_outcomes(variant_id,observation_id,data,updated_at)
+      SELECT x->>'variantId',x->>'id',x->'data',clock_timestamp() FROM jsonb_array_elements($1::jsonb) x
+      ON CONFLICT(variant_id,observation_id) DO UPDATE SET data=excluded.data,updated_at=excluded.updated_at`,[JSON.stringify(updates)]);
+    return updates.length;
+  }
+  async shadowVariantProgress() {
+    const rows=(await this.db.query(`SELECT r.variant_id AS "variantId",r.data AS outcome FROM shadow_variant_outcomes r
+      JOIN shadow_variant_observations o ON o.variant_id=r.variant_id AND o.observation_id=r.observation_id
+      WHERE o.at>=$1 ORDER BY o.at`,[date(Math.min(...forwardShadowVariants.map(v=>v.lockedStart)))])).rows as {variantId:string;outcome:ShadowOutcome}[];
+    return summarizeForwardShadow(rows);
   }
   async reserveChart(id: string, pair: DiscoveryCandidate, setup: Setup, chatKey: string, riskWarnings: string[] = []): Promise<boolean> {
     return this.db.transaction(async q => {
