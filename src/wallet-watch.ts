@@ -5,7 +5,7 @@ import WebSocket from 'ws';
 import { z } from 'zod';
 import { type Chain, type Config } from './config.js';
 import type { Store } from './store.js';
-import type { WalletTrade } from './types.js';
+import type { Market, WalletTrade } from './types.js';
 import type { Telegram } from './telegram.js';
 import type { DexScreener } from './providers/enrichment.js';
 
@@ -216,7 +216,7 @@ export class WalletWatch {
           token: swap.token, tokenAmount: decimal(swap.tokenRaw, tokenMeta.decimals), tokenSymbol: tokenMeta.symbol,
           quoteSymbol: quoteMeta.symbol, quoteAmount: decimal(swap.quoteRaw, quoteMeta.decimals),
           quoteUsd: quoteMeta.stable ? Number(decimal(swap.quoteRaw, quoteMeta.decimals)) : null, chart: null,
-        });
+        },receipt.blockNumber);
       }
       await this.store.health(`watch:${chain}`, 'healthy', `${watchedWallets.length} verified wallets subscribed; latest matching transaction checked`, Date.now());
     } catch {
@@ -234,11 +234,23 @@ export class WalletWatch {
       return { decimals: Number.isInteger(decimals) && decimals >= 0 && decimals <= 36 ? decimals : 18, symbol: decodeAbiString(symbolData) };
     } catch { return { decimals: 18, symbol: null }; }
   }
-  private async deliver(trade: WalletTrade) {
+  private async deliver(trade: WalletTrade,blockNumber?:unknown) {
+    const detectedAt=Date.now();
     const markets = await deadline(this.dex.batch(trade.chain, [trade.token]), 750, new Map());
     const market = markets.get(trade.token)?.[0];
     if (market) { trade.tokenSymbol = market.symbol; trade.chart = market.chart; }
+    if(market&&trade.side==='buy')void this.recordResearch(trade,detectedAt,market,blockNumber);
     await this.telegram.walletTrade(trade);
+  }
+  private async recordResearch(trade:WalletTrade,detectedAt:number,market:Market,blockNumber?:unknown){
+    try{
+      let sourceAt=trade.at;
+      if(trade.chain!=='solana'&&typeof blockNumber==='string'&&/^0x[0-9a-fA-F]+$/.test(blockNumber)){
+        const block=await this.jsonRpc(RPC[trade.chain].http,'eth_getBlockByNumber',[blockNumber,false]);
+        if(typeof block?.timestamp==='string'&&/^0x[0-9a-fA-F]+$/.test(block.timestamp))sourceAt=Number(BigInt(block.timestamp))*1000;
+      }
+      await this.store.saveWalletWatchResearch({...trade,at:sourceAt},detectedAt,market);
+    }catch{/* Research persistence cannot delay or suppress a wallet alert. */}
   }
   private async pollSolana() {
     if (this.solanaRunning || this.stopped) return;

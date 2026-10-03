@@ -40,9 +40,11 @@ export function config(env = process.env) {
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid PORT');
   const bitqueryRequestsPerMinute = Number(env.BITQUERY_REQUESTS_PER_MINUTE || 6);
   const researchRoundTripCostBps = Number(env.RESEARCH_ROUND_TRIP_COST_BPS || 200);
+  const candleRetentionDays = Number(env.CANDLE_RETENTION_DAYS || 35);
   const scanMode = z.enum(['full', 'shortlist']).parse(env.SCAN_MODE || 'full');
   if (!Number.isFinite(bitqueryRequestsPerMinute) || bitqueryRequestsPerMinute <= 0 || bitqueryRequestsPerMinute > 600) throw new Error('Invalid BITQUERY_REQUESTS_PER_MINUTE');
   if (!Number.isFinite(researchRoundTripCostBps) || researchRoundTripCostBps < 0 || researchRoundTripCostBps > 2000) throw new Error('Invalid RESEARCH_ROUND_TRIP_COST_BPS');
+  if (!Number.isInteger(candleRetentionDays) || candleRetentionDays < 1 || candleRetentionDays > 365) throw new Error('Invalid CANDLE_RETENTION_DAYS');
   return {
     chains: chains as Chain[], port, databaseUrl: env.DATABASE_URL || '', scanMode,
     bitqueryToken: env.BITQUERY_TOKEN || '', bitqueryRequestsPerMinute, heliusKey: env.HELIUS_API_KEY || '',
@@ -54,7 +56,10 @@ export function config(env = process.env) {
     telegramChatId: env.TELEGRAM_CHAT_ID || '', pushEnabled: bool(env.PUSH_ENABLED),
     scoutPushEnabled: bool(env.SCOUT_PUSH_ENABLED),
     baseFomoConfirmed: bool(env.BASE_FOMO_CONFIRMED), walletWatchEnabled: bool(env.WALLET_WATCH_ENABLED),
-    chartSetupsEnabled: bool(env.CHART_SETUPS_ENABLED), researchRoundTripCostBps,
+    chartSetupsEnabled: bool(env.CHART_SETUPS_ENABLED), researchRoundTripCostBps, candleRetentionDays,
+    regimeCandlesEnabled: bool(env.REGIME_CANDLES_ENABLED),
+    youngPoolResearchEnabled: bool(env.YOUNG_POOL_RESEARCH_ENABLED),
+    executionCostLoggingEnabled: bool(env.EXECUTION_COST_LOGGING_ENABLED),
   };
 }
 export type Config = ReturnType<typeof config>;

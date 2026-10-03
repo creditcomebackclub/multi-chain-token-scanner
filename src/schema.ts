@@ -34,6 +34,41 @@ CREATE TABLE IF NOT EXISTS chart_candles (
   close double precision NOT NULL, volume double precision NOT NULL, PRIMARY KEY(chain,pool,at)
 );
 CREATE INDEX IF NOT EXISTS chart_candles_time ON chart_candles(at);
+CREATE TABLE IF NOT EXISTS research_regime_candles (
+  asset text NOT NULL CHECK(asset IN ('SOL','ETH','BNB')), chain text NOT NULL,
+  token text NOT NULL, pool text NOT NULL, at timestamptz NOT NULL,
+  open double precision NOT NULL, high double precision NOT NULL, low double precision NOT NULL,
+  close double precision NOT NULL, volume double precision NOT NULL, PRIMARY KEY(asset,at)
+);
+CREATE INDEX IF NOT EXISTS research_regime_candles_time ON research_regime_candles(at);
+CREATE TABLE IF NOT EXISTS young_pool_research_observations (
+  id text PRIMARY KEY, chain text NOT NULL, token text NOT NULL, pool text NOT NULL,
+  at timestamptz NOT NULL, data jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT clock_timestamp(), UNIQUE(chain,pool)
+);
+CREATE INDEX IF NOT EXISTS young_pool_research_time ON young_pool_research_observations(at);
+CREATE TABLE IF NOT EXISTS young_pool_research_samples (
+  observation_id text NOT NULL REFERENCES young_pool_research_observations(id), at timestamptz NOT NULL,
+  price double precision NOT NULL, liquidity double precision NOT NULL, PRIMARY KEY(observation_id,at)
+);
+CREATE TABLE IF NOT EXISTS young_pool_research_outcomes (
+  observation_id text PRIMARY KEY REFERENCES young_pool_research_observations(id), data jsonb NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE TABLE IF NOT EXISTS wallet_watch_research_observations (
+  id text PRIMARY KEY, chain text NOT NULL, token text NOT NULL, source_at timestamptz NOT NULL,
+  detected_at timestamptz NOT NULL, delay_ms bigint NOT NULL, data jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE INDEX IF NOT EXISTS wallet_watch_research_time ON wallet_watch_research_observations(source_at);
+CREATE TABLE IF NOT EXISTS wallet_watch_research_samples (
+  observation_id text NOT NULL REFERENCES wallet_watch_research_observations(id), at timestamptz NOT NULL,
+  price double precision NOT NULL, liquidity double precision NOT NULL, PRIMARY KEY(observation_id,at)
+);
+CREATE TABLE IF NOT EXISTS wallet_watch_research_outcomes (
+  observation_id text PRIMARY KEY REFERENCES wallet_watch_research_observations(id), data jsonb NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
 CREATE TABLE IF NOT EXISTS chart_research_observations (
   id text PRIMARY KEY, rule text NOT NULL, chain text NOT NULL, token text NOT NULL, pool text NOT NULL,
   at timestamptz NOT NULL, kind text NOT NULL CHECK(kind IN ('signal','control')), data jsonb NOT NULL,

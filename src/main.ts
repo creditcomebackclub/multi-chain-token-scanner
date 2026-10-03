@@ -14,6 +14,7 @@ import { ShortlistWorker } from './shortlist.js';
 import { ChartSetupWorker } from './chart-setups.js';
 import { WalletWatch } from './wallet-watch.js';
 import { ChartMonitor } from './chart-monitor.js';
+import { ResearchCollector } from './research-collection.js';
 
 async function main() {
   const c = config();
@@ -53,7 +54,8 @@ async function main() {
   const worker = new Worker(c, store, dex, security, bitquery, telegram);
   const publicHttp = new Http(12_000, fetch, { minRateLimitCooldownMs: 60_000 });
   const chartHttp = c.coingeckoProKey ? new Http(250, fetch, { rateLimitRetries: 1, minRateLimitCooldownMs: 10_000 }) : publicHttp;
-  const shortlist = new ShortlistWorker(c, store, new FreeDiscovery(publicHttp), dex, security, telegram);
+  const researchCollector=new ResearchCollector(c,store,chartHttp,dex,security);
+  const shortlist = new ShortlistWorker(c, store, new FreeDiscovery(publicHttp), dex, security, telegram,researchCollector);
   const chartSetups = new ChartSetupWorker(c, store, chartHttp, dex, security, telegram);
   await store.health('chart-setups', c.chartSetupsEnabled ? 'degraded' : 'disabled', c.chartSetupsEnabled ? 'Waiting for daily watchlist and candle baseline' : 'Chart setup alerts disabled');
   const chartMonitor = new ChartMonitor(store,dex,telegram);
@@ -73,12 +75,15 @@ async function main() {
   await store.health('telegram', telegram ? 'degraded' : 'disabled', telegram ? 'Waiting for Telegram connection' : 'Bot not configured');
   await store.health('dexscreener', c.scanMode === 'shortlist' && c.ingestionEnabled ? 'degraded' : 'disabled', c.scanMode === 'shortlist' && c.ingestionEnabled ? 'Waiting for first candidate-driven exact-pool check' : 'Waiting for first mature candidate');
   await store.health('goplus', 'disabled', 'Waiting for market-qualified candidate');
+  await store.health('research-regime',c.regimeCandlesEnabled?'degraded':'disabled',c.regimeCandlesEnabled?'Waiting for first paced SOL/ETH/BNB candle refresh':'Regime candle collection disabled');
+  await store.health('research-young-pools',c.youngPoolResearchEnabled?'degraded':'disabled',c.youngPoolResearchEnabled?'Waiting for first 10m–4h discovery cohort':'Young-pool research disabled');
+  await store.health('research-costs','disabled',c.executionCostLoggingEnabled?'No approved read-only FOMO execution quote interface; collection skipped':'Executable cost logging disabled');
   if (!walletWatch) for (const chain of c.chains) await store.health(`watch:${chain}`, 'disabled', 'Direct wallet alerts disabled');
   let helius: Helius | undefined;
   if (fullScanning && c.heliusEnabled && c.heliusKey && c.heliusPrograms.length && c.chains.includes('solana')) {
     helius = new Helius(c.heliusKey, c.heliusPrograms, e => store.discover(e), async (ok, detail) => { await store.health('helius', ok ? 'healthy' : 'degraded', detail); }, async () => { const now = Date.now(); await bitquery.backfill('solana', now - MINUTE, now, e => store.ingest(e)); });
   } else await store.health('helius', 'disabled', c.heliusEnabled ? 'Key or verified program allowlist missing; Bitquery fallback active' : 'Optional fast path disabled');
-  let stopping = false, running = false, chartRunning = false, monitorRunning = false, observing = false, healthyDatabase = true, lastResearchLog=0;
+  let stopping = false, running = false, chartRunning = false, monitorRunning = false, researchRunning=false, observing = false, healthyDatabase = true, lastResearchLog=0;
   const logResearchStatus=async()=>{
     const [alerts,signals,research,learning,health]=await Promise.all([store.chartStats(),store.chartSignalStats(),store.chartResearchStats(),store.chartLearningStats(c.researchRoundTripCostBps),store.healthAll()]);
     console.log(JSON.stringify({event:'research-status',alerts,signals,research,learning,health:health.filter(item=>['chart-setups','chart-monitor','shortlist','dexscreener','goplus','telegram'].includes(item.provider))}));
@@ -114,17 +119,24 @@ async function main() {
     try{await chartMonitor.tick();}catch{await store.health('chart-monitor','degraded','Monitoring cycle failed; retrying next minute').catch(()=>undefined);}
     finally{monitorRunning=false;}
   };
+  const researchTick=async()=>{
+    if(researchRunning||stopping||!c.ingestionEnabled||!(c.regimeCandlesEnabled||c.youngPoolResearchEnabled||c.walletWatchEnabled||c.executionCostLoggingEnabled))return;
+    researchRunning=true;
+    try{await researchCollector.tick();}catch{await store.health('research-collection','degraded','Read-only research cycle failed; alert delivery was unaffected').catch(()=>undefined);}
+    finally{researchRunning=false;}
+  };
   const stopEvaluation = schedule(() => void tick(), c.scanMode === 'shortlist' ? 15 * MINUTE : MINUTE, c.scanMode === 'shortlist' ? 2.5 * MINUTE : 0);
   const observationTimer = setInterval(() => void observe(), MINUTE);
   const chartTimer = setInterval(() => void chartTick(),5*MINUTE);
   const monitorTimer=setInterval(()=>void monitorTick(),MINUTE);
-  void chartTick();void monitorTick();
+  const researchTimer=setInterval(()=>void researchTick(),5*MINUTE);
+  void chartTick();void monitorTick();void researchTick();
   console.log(JSON.stringify({ event: 'started', mode, ruleId: RULE_ID, scope: scopeId(c), port: c.port }));
   const shutdown = async () => {
-    if (stopping) return; stopping = true; stopEvaluation(); clearInterval(chartTimer); clearInterval(monitorTimer); clearInterval(observationTimer);
-    streams.forEach(s => s.stop()); helius?.stop(); walletWatch?.stop(); chartSetups.stop(); chartMonitor.stop(); telegram?.stop(); server.close();
+    if (stopping) return; stopping = true; stopEvaluation(); clearInterval(chartTimer); clearInterval(monitorTimer); clearInterval(researchTimer);clearInterval(observationTimer);
+    streams.forEach(s => s.stop()); helius?.stop(); walletWatch?.stop(); chartSetups.stop(); chartMonitor.stop();researchCollector.stop();telegram?.stop(); server.close();
     const deadline = Date.now() + 20_000;
-    while ((running || chartRunning || monitorRunning || observing) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
+    while ((running || chartRunning || monitorRunning || researchRunning || observing) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
     await store.db.close(); console.log(JSON.stringify({ event: 'stopped', healthyDatabase })); process.exit(0);
   };
   process.on('SIGINT', () => void shutdown()); process.on('SIGTERM', () => void shutdown());

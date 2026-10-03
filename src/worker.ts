@@ -48,7 +48,7 @@ export class Worker {
     }
     await this.trackOutcomes();
     if (this.telegram) await this.healthNotices();
-    if (now - this.lastRetention > HOUR) { await this.store.retention(); this.lastRetention = now; }
+    if (now - this.lastRetention > HOUR) { await this.store.retention(this.c.candleRetentionDays); this.lastRetention = now; }
   }
   async observeMinute() {
     const now = Date.now(), enabled = this.c.chains.filter(c => fomoAllowed(c, this.c));
