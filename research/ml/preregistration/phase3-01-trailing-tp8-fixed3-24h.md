@@ -1,0 +1,13 @@
+# trailing-tp8-fixed3-24h-v1
+
+- **Hypothesis:** among eligible five-minute chart observations, the existing scanner signal has positive mean net return under the locked trailing exit and outperforms eligible control candles from the same watched universe and forward period.
+- **Locked start:** 2026-10-03T14:33:12Z. Observations before this instant are ineligible, including observations already present when the implementation is deployed.
+- **Population:** all forward `chart_research_observations` produced by the existing watched-pair process. Signal observations form the candidate cohort. Control observations from the same process and period form the universe benchmark. Existing alert rules, pair selection, thresholds, and delivery do not change.
+- **Entry:** the open of the first available five-minute candle at or after the observation timestamp. A missing entry candle leaves the observation unresolved.
+- **Exit:** start with a fixed stop 3% below entry. At +8%, sell 50% and activate a one-ATR trailing stop on the remainder, measured from the post-trigger high-water mark. Exit the remainder at that trail or at the first candle at or after 24 hours. When a candle can hit both a stop and a target, resolve the stop first. Use the shared TypeScript path simulator.
+- **Costs:** report expectancy after the configured modeled round-trip cost while real execution costs are unavailable, clearly labelled modeled. Modeled-cost results cannot satisfy the promotion gate. Promotion requires results net of logged real costs from a compliant read-only execution interface, or a separately pre-registered conservative replacement.
+- **Primary metric:** arithmetic mean net return of resolved signal observations.
+- **Required sample:** 180 resolved signal observations and at least 20 distinct UTC entry days. The count comes from the existing power analysis for approximately one percentage point of detectable expectancy; both gates are locked.
+- **Success criterion:** the day-block bootstrap 95% confidence interval for signal mean net return excludes zero on the positive side, and the paired same-day signal-minus-control mean-return interval also excludes zero on the positive side. Each interval is not estimable below three distinct UTC day blocks. The cohort must meet the required sample and day counts and the return calculation must use logged real costs before the variant becomes eligible for manual promotion.
+- **Multiplicity:** this is the only Phase 3 variant started by this preregistration, so no familywise adjustment is needed. Any later variant must be registered before its own locked start and evaluated separately.
+- **Delivery:** shadow only. It creates no Telegram push and cannot reserve or modify an alert.
