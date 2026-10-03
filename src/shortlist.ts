@@ -5,6 +5,7 @@ import type { Store } from './store.js';
 import type { Telegram } from './telegram.js';
 import type { DexScreener, GoPlus } from './providers/enrichment.js';
 import type { DiscoveryCandidate, FreeDiscovery } from './providers/discovery.js';
+import type { ResearchCollector } from './research-collection.js';
 
 export interface ShortlistEntry extends DiscoveryCandidate {
   at: number;
@@ -61,10 +62,14 @@ export function screenMarket(candidate: DiscoveryCandidate, now: number, dex?: M
 export class ShortlistWorker {
   private securityCache = new Map<string, Security>();
   private lastRetention = 0;
-  constructor(private c: Config, private store: Store, private discovery: FreeDiscovery, private dex: DexScreener, private security: GoPlus, private telegram?: Telegram) {}
+  constructor(private c: Config, private store: Store, private discovery: FreeDiscovery, private dex: DexScreener, private security: GoPlus, private telegram?: Telegram, private research?:Pick<ResearchCollector,'observeYoungPools'>) {}
   async tick() {
     const result = await this.discovery.discover(this.c.chains), now = Date.now();
-    if (this.c.chartSetupsEnabled) await this.store.saveSetupCandidates(result.candidates);
+    if (this.c.chartSetupsEnabled) await this.store.saveSetupCandidates(result.candidates,this.c.candleRetentionDays);
+    if (this.c.youngPoolResearchEnabled) {
+      try{await this.research?.observeYoungPools(result.candidates,now);}
+      catch{await this.store.health('research-young-pools','degraded','Research cohort collection failed; shortlist and alert delivery continued').catch(()=>undefined);}
+    }
     for (const chain of this.c.chains) {
       const health = result.health[chain];
       await this.store.health(`discovery:${chain}`, health?.ok ? 'healthy' : 'degraded', health?.detail || 'Discovery unavailable');
@@ -118,7 +123,7 @@ export class ShortlistWorker {
     // "disabled" merely because this shortlist cycle had no market match.
     const allFeedsHealthy = this.c.chains.every(chain => result.health[chain]?.ok);
     await this.store.health('shortlist', allFeedsHealthy && !dexFailed.length ? 'healthy' : 'degraded', `Reviewed ${fresh.length} pools; ${entries.length} are 10m–24h speculative-token candidates after major/stable exclusions; ${entries.filter(row => row.marketPass).length} pass the GeckoTerminal + DEX Screener market screen. Quotes and full trade analysis remain unverified.`);
-    if (now - this.lastRetention > HOUR) { await this.store.retention(); this.lastRetention = now; }
+    if (now - this.lastRetention > HOUR) { await this.store.retention(this.c.candleRetentionDays); this.lastRetention = now; }
     console.log(JSON.stringify({ event: 'shortlist_refreshed', pools: entries.length, marketMatches: entries.filter(row => row.marketPass).length }));
   }
 }

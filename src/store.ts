@@ -7,7 +7,7 @@ import type { AlertOutcome, ManagedPosition, PositionEvent } from './chart-monit
 import pg from 'pg';
 import { randomUUID } from 'node:crypto';
 import { DAY, HOUR, MAX_ALERTS_PER_24H, MAX_SCOUT_ALERTS_PER_24H, MINUTE, RULE_ID, rules, type Chain } from './config.js';
-import type { Discovery, Health, Reference, Snapshot, Trade, WalletTrade } from './types.js';
+import type { Discovery, Health, Market, Reference, Security, Snapshot, Trade, WalletTrade } from './types.js';
 import type { ShortlistEntry } from './shortlist.js';
 import { schema } from './schema.js';
 export interface Sql { query(sql: string, params?: any[]): Promise<{ rows: any[]; rowCount?: number | null }> }
@@ -41,14 +41,14 @@ export class Store {
     await this.db.query("UPDATE shortlist_alerts SET status='unknown',sent_at=clock_timestamp() WHERE status IN ('reserved','sending') AND reserved_at < clock_timestamp()-interval '2 minutes'");
     await this.db.query("UPDATE wallet_watch_alerts SET status='unknown',sent_at=clock_timestamp() WHERE status IN ('reserved','sending') AND reserved_at < clock_timestamp()-interval '2 minutes'");
   }
-  async saveSetupCandidates(entries: DiscoveryCandidate[]) {
+  async saveSetupCandidates(entries: DiscoveryCandidate[], candleRetentionDays=35) {
     if (entries.length) await this.db.query(`INSERT INTO setup_candidates(chain,token,pool,data)
       SELECT e->>'chain',e->>'token',e->>'pool',e FROM jsonb_array_elements($1::jsonb) e
       ON CONFLICT(chain,token,pool) DO UPDATE SET data=excluded.data`, [JSON.stringify(entries)]);
     await this.db.query("DELETE FROM setup_candidates WHERE (data->>'fetchedAt')::double precision < extract(epoch FROM clock_timestamp()-interval '2 days')*1000");
     await this.db.query("DELETE FROM chart_watchlists WHERE created_at < clock_timestamp()-interval '7 days'");
     await this.db.query("DELETE FROM chart_pair_states WHERE (data->>'checkedAt')::double precision < extract(epoch FROM clock_timestamp()-interval '7 days')*1000");
-    await this.db.query("DELETE FROM chart_candles WHERE at < clock_timestamp()-interval '35 days'");
+    await this.db.query('DELETE FROM chart_candles WHERE at < clock_timestamp()-make_interval(days=>$1)',[candleRetentionDays]);
   }
   async setupCandidates(): Promise<DiscoveryCandidate[]> { return (await this.db.query('SELECT data FROM setup_candidates')).rows.map(r => r.data); }
   async chartWatchlist(day: string): Promise<DiscoveryCandidate[]> { return (await this.db.query('SELECT data FROM chart_watchlists WHERE day=$1', [day])).rows[0]?.data ?? []; }
@@ -78,6 +78,77 @@ export class Store {
       SELECT $1,$2,$3,to_timestamp((x->>'at')::double precision/1000),(x->>'open')::double precision,(x->>'high')::double precision,
         (x->>'low')::double precision,(x->>'close')::double precision,(x->>'volume')::double precision
       FROM jsonb_array_elements($4::jsonb) x ON CONFLICT DO NOTHING`,[pair.chain,pair.token,pair.pool,JSON.stringify(bars)]);
+  }
+  async saveRegimeCandles(asset:'SOL'|'ETH'|'BNB',pair:{chain:Chain;token:string;pool:string},bars:Candle[]) {
+    if(!bars.length)return;
+    await this.db.query(`INSERT INTO research_regime_candles(asset,chain,token,pool,at,open,high,low,close,volume)
+      SELECT $1,$2,$3,$4,to_timestamp((x->>'at')::double precision/1000),(x->>'open')::double precision,(x->>'high')::double precision,
+        (x->>'low')::double precision,(x->>'close')::double precision,(x->>'volume')::double precision
+      FROM jsonb_array_elements($5::jsonb) x ON CONFLICT DO NOTHING`,[asset,pair.chain,pair.token,pair.pool,JSON.stringify(bars)]);
+  }
+  async saveYoungPoolResearch(id:string,pair:DiscoveryCandidate,market:Market,security:Security) {
+    const evidence={kind:'control',pair,market:{pool:market.pool,price:market.price,liquidity:market.liquidity,fdv:market.fdv,marketCap:market.marketCap,fetchedAt:market.fetchedAt},
+      security:{status:security.status,reasons:security.reasons,buyTax:security.buyTax,sellTax:security.sellTax,checkedAt:security.checkedAt}};
+    await this.db.transaction(async q=>{
+      const inserted=await q.query(`INSERT INTO young_pool_research_observations(id,chain,token,pool,at,data)
+        VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING RETURNING id`,[id,pair.chain,pair.token,pair.pool,date(pair.fetchedAt),JSON.stringify(evidence)]);
+      if(inserted.rows.length)await q.query(`INSERT INTO young_pool_research_samples(observation_id,at,price,liquidity)
+        VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`,[id,date(market.fetchedAt),market.price,market.liquidity]);
+    });
+  }
+  async youngPoolResearchExists(chain:Chain,pool:string){
+    return !!(await this.db.query('SELECT 1 FROM young_pool_research_observations WHERE chain=$1 AND pool=$2 LIMIT 1',[chain,pool])).rows.length;
+  }
+  async youngPoolResearchPending(now=Date.now()) {
+    return (await this.db.query(`SELECT o.id,o.chain,o.token,o.pool,extract(epoch FROM o.at)*1000 AS "sourceAt",o.data
+      FROM young_pool_research_observations o LEFT JOIN young_pool_research_outcomes r ON r.observation_id=o.id
+      WHERE o.at>$1 AND (r.observation_id IS NULL OR (r.data->>'complete')::boolean=false) ORDER BY o.at LIMIT 100`,[date(now-7*DAY)])).rows
+      .map(row=>({...row,sourceAt:Number(row.sourceAt)}));
+  }
+  async saveYoungPoolResearchSample(id:string,at:number,price:number,liquidity:number){
+    await this.db.query(`INSERT INTO young_pool_research_samples(observation_id,at,price,liquidity)
+      VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`,[id,date(Math.floor(at/MINUTE)*MINUTE),price,liquidity]);
+  }
+  async saveWalletWatchResearch(trade:WalletTrade,detectedAt:number,market:Market){
+    if(trade.side!=='buy')return;
+    const delayMs=Math.max(0,detectedAt-trade.at),data={side:trade.side,tokenAmount:trade.tokenAmount,
+      quoteSymbol:trade.quoteSymbol,quoteAmount:trade.quoteAmount,quoteUsd:trade.quoteUsd,
+      market:{pool:market.pool,price:market.price,liquidity:market.liquidity,fdv:market.fdv,marketCap:market.marketCap,fetchedAt:market.fetchedAt}};
+    await this.db.transaction(async q=>{
+      const inserted=await q.query(`INSERT INTO wallet_watch_research_observations(id,chain,token,source_at,detected_at,delay_ms,data)
+        VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING RETURNING id`,[trade.id,trade.chain,trade.token,date(trade.at),date(detectedAt),delayMs,JSON.stringify(data)]);
+      if(inserted.rows.length)await q.query(`INSERT INTO wallet_watch_research_samples(observation_id,at,price,liquidity)
+        VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`,[trade.id,date(market.fetchedAt),market.price,market.liquidity]);
+    });
+  }
+  async walletWatchResearchPending(now=Date.now()){
+    return (await this.db.query(`SELECT o.id,o.chain,o.token,o.data->'market'->>'pool' AS pool,
+      extract(epoch FROM o.source_at)*1000 AS "sourceAt",o.data
+      FROM wallet_watch_research_observations o LEFT JOIN wallet_watch_research_outcomes r ON r.observation_id=o.id
+      WHERE o.source_at>$1 AND (r.observation_id IS NULL OR (r.data->>'complete')::boolean=false) ORDER BY o.source_at LIMIT 100`,[date(now-7*DAY)])).rows
+      .map(row=>({...row,sourceAt:Number(row.sourceAt)}));
+  }
+  async saveWalletWatchResearchSample(id:string,at:number,price:number,liquidity:number){
+    await this.db.query(`INSERT INTO wallet_watch_research_samples(observation_id,at,price,liquidity)
+      VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`,[id,date(Math.floor(at/MINUTE)*MINUTE),price,liquidity]);
+  }
+  async updateMarketResearchOutcomes(now=Date.now()){
+    const update=async(kind:'young_pool'|'wallet_watch')=>{
+      const observations=`${kind}_research_observations`,samples=`${kind}_research_samples`,outcomes=`${kind}_research_outcomes`;
+      const rows=(await this.db.query(`SELECT o.id,extract(epoch FROM ${kind==='wallet_watch'?'o.source_at':'o.at'})*1000 AS at,o.data,
+        coalesce(jsonb_agg(jsonb_build_object('at',extract(epoch FROM s.at)*1000,'price',s.price,'liquidity',s.liquidity) ORDER BY s.at)
+          FILTER(WHERE s.observation_id IS NOT NULL),'[]'::jsonb) AS samples
+        FROM ${observations} o LEFT JOIN ${outcomes} r ON r.observation_id=o.id LEFT JOIN ${samples} s ON s.observation_id=o.id
+        WHERE ${kind==='wallet_watch'?'o.source_at':'o.at'}>$1 AND (r.observation_id IS NULL OR (r.data->>'complete')::boolean=false)
+        GROUP BY o.id,o.data,${kind==='wallet_watch'?'o.source_at':'o.at'} LIMIT 200`,[date(now-7*DAY)])).rows;
+      if(!rows.length)return 0;
+      const values=rows.map(row=>({id:row.id,data:marketResearchOutcome(Number(row.at),Number(row.data?.market?.price),Number(row.data?.market?.liquidity),row.samples,now)}));
+      await this.db.query(`INSERT INTO ${outcomes}(observation_id,data,updated_at)
+        SELECT x->>'id',x->'data',clock_timestamp() FROM jsonb_array_elements($1::jsonb) x
+        ON CONFLICT(observation_id) DO UPDATE SET data=excluded.data,updated_at=excluded.updated_at`,[JSON.stringify(values)]);
+      return values.length;
+    };
+    return{youngPool:await update('young_pool'),walletWatch:await update('wallet_watch')};
   }
   async chartResearchBackfillCandidate(now:number):Promise<DiscoveryCandidate|undefined>{
     const row=(await this.db.query(`SELECT pair FROM (SELECT DISTINCT ON(o.chain,o.pool) o.data->'pair' AS pair,o.at
@@ -473,9 +544,26 @@ export class Store {
       JOIN snapshots s ON s.id=r.snapshot_id WHERE r.at>clock_timestamp()-interval '7 days'`)).rows;
     return { alerts, outcomes };
   }
-  async retention() {
+  async retention(candleRetentionDays=35) {
     await this.db.query("DELETE FROM events WHERE at<clock_timestamp()-interval '48 hours'");
     await this.db.query("DELETE FROM discoveries WHERE at<clock_timestamp()-interval '48 hours'");
     await this.db.query("DELETE FROM candidates WHERE last_seen<clock_timestamp()-interval '48 hours'");
+    await this.db.query('DELETE FROM chart_candles WHERE at<clock_timestamp()-make_interval(days=>$1)',[candleRetentionDays]);
+    await this.db.query('DELETE FROM research_regime_candles WHERE at<clock_timestamp()-make_interval(days=>$1)',[candleRetentionDays]);
   }
+}
+
+export function marketResearchOutcome(sourceAt:number,entryPrice:number,entryLiquidity:number,samples:{at:number;price:number;liquidity:number}[],now:number){
+  const ordered=samples.map(sample=>({at:Number(sample.at),price:Number(sample.price),liquidity:Number(sample.liquidity)}))
+    .filter(sample=>[sample.at,sample.price,sample.liquidity].every(Number.isFinite)&&sample.price>0&&sample.liquidity>=0).sort((a,b)=>a.at-b.at);
+  const endAt=sourceAt+24*HOUR,endSample=ordered.find(sample=>sample.at>=endAt);
+  const rug=ordered.find(sample=>sample.at<=endAt&&sample.liquidity<=Math.max(100,entryLiquidity*.01));
+  const cutoff=rug?.at??endSample?.at??Math.min(now,endAt);
+  const through=ordered.filter(sample=>sample.at<=cutoff),last=through.at(-1),complete=!!rug||!!endSample;
+  const valueAt=(hours:number)=>ordered.find(sample=>sample.at>=sourceAt+hours*HOUR&&sample.at<=cutoff)?.price??null;
+  const pct=(price:number|null)=>price===null||!Number.isFinite(entryPrice)||entryPrice<=0?null:(price/entryPrice-1)*100;
+  return{entryPrice,entryLiquidity,observedMinutes:last?Math.max(0,(last.at-sourceAt)/MINUTE):0,complete,rugAt:rug?.at??null,
+    returnPct:rug?-100:pct(complete?last?.price??null:null),mfePct:through.length?pct(Math.max(...through.map(sample=>sample.price))):null,
+    maePct:rug?-100:through.length?pct(Math.min(...through.map(sample=>sample.price))):null,
+    horizons:{'1h':pct(valueAt(1)),'4h':pct(valueAt(4)),'24h':rug?-100:pct(valueAt(24))}};
 }
