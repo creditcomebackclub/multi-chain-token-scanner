@@ -44,6 +44,24 @@ CREATE TABLE IF NOT EXISTS chart_research_outcomes (
   observation_id text PRIMARY KEY REFERENCES chart_research_observations(id), data jsonb NOT NULL,
   updated_at timestamptz NOT NULL DEFAULT clock_timestamp()
 );
+CREATE TABLE IF NOT EXISTS shadow_variant_observations (
+  variant_id text NOT NULL, observation_id text NOT NULL REFERENCES chart_research_observations(id),
+  population text NOT NULL CHECK(population IN ('signal','control')), at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT clock_timestamp(), PRIMARY KEY(variant_id,observation_id)
+);
+CREATE TABLE IF NOT EXISTS shadow_variant_registry (
+  variant_id text PRIMARY KEY, locked_start timestamptz NOT NULL,
+  activated_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+INSERT INTO shadow_variant_registry(variant_id,locked_start)
+VALUES('trailing-tp8-fixed3-24h-v1','2026-10-03T14:33:12Z') ON CONFLICT DO NOTHING;
+CREATE INDEX IF NOT EXISTS shadow_variant_observations_time ON shadow_variant_observations(variant_id,at);
+CREATE TABLE IF NOT EXISTS shadow_variant_outcomes (
+  variant_id text NOT NULL, observation_id text NOT NULL,
+  data jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY(variant_id,observation_id),
+  FOREIGN KEY(variant_id,observation_id) REFERENCES shadow_variant_observations(variant_id,observation_id)
+);
 CREATE TABLE IF NOT EXISTS chart_positions (
   id text PRIMARY KEY, alert_id text NOT NULL REFERENCES chart_setup_alerts(id), chain text NOT NULL,
   token text NOT NULL, pool text NOT NULL, data jsonb NOT NULL,

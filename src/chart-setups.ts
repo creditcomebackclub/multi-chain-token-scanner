@@ -132,7 +132,8 @@ export class ChartSetupWorker {
       }catch{/* The next cycle retries the oldest incomplete pool. */}
     }
     const labeled=await this.store.updateChartResearchOutcomes(Date.now(),this.c.researchRoundTripCostBps);
+    const shadowed=await this.store.updateShadowVariantOutcomes(Date.now(),this.c.researchRoundTripCostBps).catch(()=>0);
     await this.store.health('chart-setups',ready === selected.length && selected.length >= CHART_WATCHLIST_SIZE && !failures ? 'healthy' : 'degraded',
-      `${pairs.length}/${CHART_WATCHLIST_SIZE} tradeable rolling pairs selected; ${ready}/${attempted} charts have fresh usable 5m candles this cycle; ${failures} refresh failures; ${labeled} research outcomes refreshed; ${backfilled} matured pool backfilled. ${this.c.coingeckoProKey?'CoinGecko paid candle route':'GeckoTerminal public candle route'}; every selected pair is checked each 5-minute cycle. /setups shows each pair.`);
+      `${pairs.length}/${CHART_WATCHLIST_SIZE} tradeable rolling pairs selected; ${ready}/${attempted} charts have fresh usable 5m candles this cycle; ${failures} refresh failures; ${labeled} research outcomes refreshed; ${shadowed} forward shadow outcomes resolved; ${backfilled} matured pool backfilled. ${this.c.coingeckoProKey?'CoinGecko paid candle route':'GeckoTerminal public candle route'}; every selected pair is checked each 5-minute cycle. /setups shows each pair.`);
   }
 }

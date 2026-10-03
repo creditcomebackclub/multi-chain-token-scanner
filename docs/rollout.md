@@ -64,3 +64,17 @@ The command rejects stale rule/scope IDs, inadequate observation, unhealthy curr
 Set `PUSH_ENABLED=true` only after approval. Confirm `/status` reflects the approved rule/scope. Run the first day without trades, validate copied contracts and token routes in FOMO, and test `/pause` and `/resume`.
 
 Review `/stats` by rule version each week. Change thresholds through the versioned JSON and repeat observation/review for the new rule ID. Score interpolation is a hypothesis to evaluate, not a calibrated probability of success.
+
+## Forward shadow promotion checklist
+
+`/shadow` reports the locked Phase 3 cohorts. Shadow enrollment and simulation never reserve or send an alert. The first registered challenger is `trailing-tp8-fixed3-24h-v1`, locked at `2026-10-03T14:33:12Z`: enter at the next five-minute candle open, use a fixed 3% stop, sell half at +8%, trail the remainder by one entry-time ATR, and close at 24 hours.
+
+A variant may be considered for promotion only when every item below is true:
+
+- [ ] The locked forward signal cohort reaches its pre-registered sample requirement (180 resolved signals and 20 distinct UTC entry days for the first challenger).
+- [ ] Its day-block bootstrap 95% expectancy interval is wholly above zero after logged real execution costs.
+- [ ] Its paired same-period edge over eligible control candles from the watched universe has a day-block bootstrap 95% interval wholly above zero.
+- [ ] Cost evidence comes from an approved, read-only execution interface. A configured cost assumption is labelled modeled and cannot pass this gate.
+- [ ] The owner reviews the evidence and explicitly decides whether to change the live strategy.
+
+Intervals remain “not estimable” with fewer than three day blocks. Passing the automatic evidence checks does not promote a variant or alter BUY alerts.
