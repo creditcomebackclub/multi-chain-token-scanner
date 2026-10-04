@@ -1,6 +1,6 @@
 import { schedule } from './schedule.js';
 import { createServer } from 'node:http';
-import { config, MINUTE, RULE_ID, type Chain } from './config.js';
+import { config, HOUR, MINUTE, RULE_ID, type Chain } from './config.js';
 import { Store, postgres } from './store.js';
 import { BitqueryHttp, BitqueryStream, type StreamHooks } from './providers/bitquery.js';
 import { Http } from './providers/http.js';
@@ -15,6 +15,7 @@ import { ChartSetupWorker } from './chart-setups.js';
 import { WalletWatch } from './wallet-watch.js';
 import { ChartMonitor } from './chart-monitor.js';
 import { ResearchCollector } from './research-collection.js';
+import { ResearchMilestones } from './research-milestones.js';
 
 async function main() {
   const c = config();
@@ -24,6 +25,10 @@ async function main() {
   if (c.telegramToken && !/^[1-9]\d*$/.test(c.telegramChatId)) throw new Error('TELEGRAM_CHAT_ID must identify one private user chat');
   const store = new Store(postgres(c.databaseUrl));
   await store.migrate();
+  await store.ensureResearchCollectorActivations([
+    ...(c.regimeCandlesEnabled?['regime' as const]:[]),
+    ...(c.youngPoolResearchEnabled?['young_pool' as const]:[]),
+  ],c.researchCollectorActivatedAt);
   const latestBuy=await store.latestChartAlert();
   if(latestBuy){
     const plan=latestBuy.data?.plan,outcome=latestBuy.outcome,pair=latestBuy.data?.pair;
@@ -36,6 +41,9 @@ async function main() {
   catch { console.error('Strategy learning report unavailable; retrying with the next chart cycle.'); }
   const bitquery = new BitqueryHttp(c.bitqueryToken, new Http(Math.ceil(MINUTE / c.bitqueryRequestsPerMinute), fetch, { rateLimitRetries: 2 }));
   const telegram = c.telegramToken ? new Telegram(c, store) : undefined;
+  const milestoneTelegram=telegram;
+  const researchMilestones=milestoneTelegram?new ResearchMilestones(c,store,{chatKey:milestoneTelegram.chatKey,send:text=>milestoneTelegram.send(text)}):undefined;
+  if(researchMilestones)milestoneTelegram!.attachResearchMilestones(researchMilestones);
   const dex = new DexScreener(), security = new GoPlus(c.goplusToken);
   const auditRecentSecurity=async()=>{
     const pending=await store.chartSecurityAuditCandidates();
@@ -83,7 +91,7 @@ async function main() {
   if (fullScanning && c.heliusEnabled && c.heliusKey && c.heliusPrograms.length && c.chains.includes('solana')) {
     helius = new Helius(c.heliusKey, c.heliusPrograms, e => store.discover(e), async (ok, detail) => { await store.health('helius', ok ? 'healthy' : 'degraded', detail); }, async () => { const now = Date.now(); await bitquery.backfill('solana', now - MINUTE, now, e => store.ingest(e)); });
   } else await store.health('helius', 'disabled', c.heliusEnabled ? 'Key or verified program allowlist missing; Bitquery fallback active' : 'Optional fast path disabled');
-  let stopping = false, running = false, chartRunning = false, monitorRunning = false, researchRunning=false, observing = false, healthyDatabase = true, lastResearchLog=0;
+  let stopping = false, running = false, chartRunning = false, monitorRunning = false, researchRunning=false, milestoneRunning=false, observing = false, healthyDatabase = true, lastResearchLog=0;
   const logResearchStatus=async()=>{
     const [alerts,signals,research,learning,health]=await Promise.all([store.chartStats(),store.chartSignalStats(),store.chartResearchStats(),store.chartLearningStats(c.researchRoundTripCostBps),store.healthAll()]);
     console.log(JSON.stringify({event:'research-status',alerts,signals,research,learning,health:health.filter(item=>['chart-setups','chart-monitor','shortlist','dexscreener','goplus','telegram'].includes(item.provider))}));
@@ -125,18 +133,25 @@ async function main() {
     try{await researchCollector.tick();}catch{await store.health('research-collection','degraded','Read-only research cycle failed; alert delivery was unaffected').catch(()=>undefined);}
     finally{researchRunning=false;}
   };
+  const milestoneTick=async()=>{
+    if(!researchMilestones||milestoneRunning||stopping||!c.researchMilestonesEnabled)return;
+    milestoneRunning=true;
+    try{await researchMilestones.run();}catch{console.error('Research milestone evaluation failed; retrying after the hourly gate.');}
+    finally{milestoneRunning=false;}
+  };
   const stopEvaluation = schedule(() => void tick(), c.scanMode === 'shortlist' ? 15 * MINUTE : MINUTE, c.scanMode === 'shortlist' ? 2.5 * MINUTE : 0);
   const observationTimer = setInterval(() => void observe(), MINUTE);
   const chartTimer = setInterval(() => void chartTick(),5*MINUTE);
   const monitorTimer=setInterval(()=>void monitorTick(),MINUTE);
   const researchTimer=setInterval(()=>void researchTick(),5*MINUTE);
-  void chartTick();void monitorTick();void researchTick();
+  const milestoneTimer=setInterval(()=>void milestoneTick(),HOUR);
+  void chartTick();void monitorTick();void researchTick();void milestoneTick();
   console.log(JSON.stringify({ event: 'started', mode, ruleId: RULE_ID, scope: scopeId(c), port: c.port }));
   const shutdown = async () => {
-    if (stopping) return; stopping = true; stopEvaluation(); clearInterval(chartTimer); clearInterval(monitorTimer); clearInterval(researchTimer);clearInterval(observationTimer);
+    if (stopping) return; stopping = true; stopEvaluation(); clearInterval(chartTimer); clearInterval(monitorTimer); clearInterval(researchTimer);clearInterval(milestoneTimer);clearInterval(observationTimer);
     streams.forEach(s => s.stop()); helius?.stop(); walletWatch?.stop(); chartSetups.stop(); chartMonitor.stop();researchCollector.stop();telegram?.stop(); server.close();
     const deadline = Date.now() + 20_000;
-    while ((running || chartRunning || monitorRunning || researchRunning || observing) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
+    while ((running || chartRunning || monitorRunning || researchRunning || milestoneRunning || observing) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 100));
     await store.db.close(); console.log(JSON.stringify({ event: 'stopped', healthyDatabase })); process.exit(0);
   };
   process.on('SIGINT', () => void shutdown()); process.on('SIGTERM', () => void shutdown());

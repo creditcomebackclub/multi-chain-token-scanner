@@ -41,10 +41,14 @@ export function config(env = process.env) {
   const bitqueryRequestsPerMinute = Number(env.BITQUERY_REQUESTS_PER_MINUTE || 6);
   const researchRoundTripCostBps = Number(env.RESEARCH_ROUND_TRIP_COST_BPS || 200);
   const candleRetentionDays = Number(env.CANDLE_RETENTION_DAYS || 35);
+  const dbVolumeLimitMb = Number(env.DB_VOLUME_LIMIT_MB || 500);
+  const researchCollectorActivatedAt = env.RESEARCH_COLLECTOR_ACTIVATED_AT ? Date.parse(env.RESEARCH_COLLECTOR_ACTIVATED_AT) : null;
   const scanMode = z.enum(['full', 'shortlist']).parse(env.SCAN_MODE || 'full');
   if (!Number.isFinite(bitqueryRequestsPerMinute) || bitqueryRequestsPerMinute <= 0 || bitqueryRequestsPerMinute > 600) throw new Error('Invalid BITQUERY_REQUESTS_PER_MINUTE');
   if (!Number.isFinite(researchRoundTripCostBps) || researchRoundTripCostBps < 0 || researchRoundTripCostBps > 2000) throw new Error('Invalid RESEARCH_ROUND_TRIP_COST_BPS');
   if (!Number.isInteger(candleRetentionDays) || candleRetentionDays < 1 || candleRetentionDays > 365) throw new Error('Invalid CANDLE_RETENTION_DAYS');
+  if (!Number.isFinite(dbVolumeLimitMb) || dbVolumeLimitMb <= 0) throw new Error('Invalid DB_VOLUME_LIMIT_MB');
+  if (researchCollectorActivatedAt !== null && !Number.isFinite(researchCollectorActivatedAt)) throw new Error('Invalid RESEARCH_COLLECTOR_ACTIVATED_AT');
   return {
     chains: chains as Chain[], port, databaseUrl: env.DATABASE_URL || '', scanMode,
     bitqueryToken: env.BITQUERY_TOKEN || '', bitqueryRequestsPerMinute, heliusKey: env.HELIUS_API_KEY || '',
@@ -60,6 +64,8 @@ export function config(env = process.env) {
     regimeCandlesEnabled: bool(env.REGIME_CANDLES_ENABLED),
     youngPoolResearchEnabled: bool(env.YOUNG_POOL_RESEARCH_ENABLED),
     executionCostLoggingEnabled: bool(env.EXECUTION_COST_LOGGING_ENABLED),
+    researchMilestonesEnabled: bool(env.RESEARCH_MILESTONES_ENABLED, true),
+    researchCollectorActivatedAt, dbVolumeLimitMb,
   };
 }
 export type Config = ReturnType<typeof config>;
