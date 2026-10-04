@@ -125,6 +125,18 @@ CREATE TABLE IF NOT EXISTS chart_position_events (
   status text NOT NULL CHECK(status IN ('reserved','sent','unknown','failed')),
   message_id bigint, sent_at timestamptz, PRIMARY KEY(position_id,kind)
 );
+CREATE TABLE IF NOT EXISTS execution_cost_observations (
+  position_id text PRIMARY KEY REFERENCES chart_positions(id), chain text NOT NULL, token text NOT NULL, pool text NOT NULL,
+  entry_data jsonb NOT NULL, exit_data jsonb, entry_liquidity_bucket text NOT NULL,
+  observed_cost_bps double precision, model_cost_bps double precision,
+  completed_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS execution_cost_observations_completed ON execution_cost_observations(completed_at);
+CREATE TABLE IF NOT EXISTS execution_cost_model_state (
+  version text PRIMARY KEY, invalidated_at timestamptz, evidence jsonb NOT NULL DEFAULT '{}'::jsonb,
+  updated_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+INSERT INTO execution_cost_model_state(version) VALUES('cost-model-v1') ON CONFLICT DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS scanner_state (
   id integer PRIMARY KEY CHECK (id = 1), paused boolean NOT NULL DEFAULT false,

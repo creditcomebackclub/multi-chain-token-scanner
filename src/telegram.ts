@@ -10,6 +10,7 @@ import { shortlistEligible, type ShortlistEntry } from './shortlist.js';
 import { walletExplorer, watchedWallets } from './wallet-watch.js';
 import type { ManagedPosition } from './chart-monitor.js';
 import type { ResearchMilestones } from './research-milestones.js';
+import type { ExecutionCosts } from './execution-costs.js';
 export const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const dollars = (v: number | null) => v === null ? 'unknown' : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumSignificantDigits: 4 }).format(v);
 export function renderAlert(s: Snapshot): string {
@@ -89,8 +90,10 @@ export class Telegram {
   constructor(private c: Config, private store: Store, private http = new Http(1100), private pollHttp = new Http(1000)) {
     this.chatKey = createHash('sha256').update(`${c.telegramToken}:${c.telegramChatId}`).digest('hex');
   }
-  private researchMilestones?:Pick<ResearchMilestones,'statuses'>;
-  attachResearchMilestones(value:Pick<ResearchMilestones,'statuses'>){this.researchMilestones=value;}
+  private researchMilestones?:Pick<ResearchMilestones,'statuses'|'costsChanged'>;
+  private executionCosts?:Pick<ExecutionCosts,'entered'|'exited'|'summary'>;
+  attachResearchMilestones(value:Pick<ResearchMilestones,'statuses'|'costsChanged'>){this.researchMilestones=value;}
+  attachExecutionCosts(value:Pick<ExecutionCosts,'entered'|'exited'|'summary'>){this.executionCosts=value;}
   async send(text: string): Promise<number> {
     const response = await this.http.json(`https://api.telegram.org/bot${this.c.telegramToken}/sendMessage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: this.c.telegramChatId, text, parse_mode: 'HTML', link_preview_options: { is_disabled: true } }) });
     if (response.ok !== true || !Number.isInteger(response.result?.message_id)) throw new Error('Telegram send failed or ambiguous');
@@ -130,7 +133,7 @@ export class Telegram {
     if (!m || m.chat?.type !== 'private' || String(m.chat.id) !== this.c.telegramChatId || typeof m.text !== 'string') return;
     const args=m.text.trim().split(/\s+/), command = args[0].split('@')[0].toLowerCase();
     if (command === '/start') { await this.store.validateChat(this.chatKey); await this.send(this.c.scanMode === 'shortlist'
-      ? `Private chat validated. 5M BUY alerts are ${this.c.pushEnabled ? `enabled with an independent ${MAX_ALERTS_PER_24H}-per-24h cap` : 'disabled'}. Automatic SCOUT pushes are ${this.c.scoutPushEnabled ? `enabled with a ${MAX_SCOUT_ALERTS_PER_24H}-per-24h cap` : 'off; /shortlist remains available'}. Use /setups, /stats, /research, /shadow, /milestones, /learn, /security, or /lastbuy. Execution remains manual.`
+      ? `Private chat validated. 5M BUY alerts are ${this.c.pushEnabled ? `enabled with an independent ${MAX_ALERTS_PER_24H}-per-24h cap` : 'disabled'}. Automatic SCOUT pushes are ${this.c.scoutPushEnabled ? `enabled with a ${MAX_SCOUT_ALERTS_PER_24H}-per-24h cap` : 'off; /shortlist remains available'}. Use /setups, /stats, /research, /shadow, /milestones, /costs, /learn, /security, or /lastbuy. Execution remains manual.`
       : 'Private chat validated. Use /status, /pause, /resume, /recent, /stats, or /milestones. Candidate pushes stay disabled until the observation and rollout gates pass.'); return; }
     if ((await this.store.state()).chat_key !== this.chatKey) { await this.send('Send /start to validate this configured private chat.'); return; }
     if (command === '/pause' || command === '/resume') {
@@ -149,9 +152,24 @@ export class Telegram {
     }
     else if (command === '/entered') {
       try {
-        const position=await this.store.registerChartPosition(args[1]||'',commandNumber(args[2]),commandNumber(args[3]));
-        await this.send(`✅ <b>POSITION MONITOR ARMED</b>\n\n${positionLine(position)}\n\nI will check DEX Screener about once per minute and alert at TP1, TP2, the stop, or a severe liquidity drop. FOMO execution stays manual; spot samples can miss brief moves or gaps.`);
+        const position=this.executionCosts?await this.executionCosts.entered(args[1]||'',commandNumber(args[2]),commandNumber(args[3])):
+          await this.store.registerChartPosition(args[1]||'',commandNumber(args[2]),commandNumber(args[3]));
+        await this.send(`✅ <b>POSITION MONITOR ARMED</b>\n\n${positionLine(position)}\n\n${this.executionCosts?'Observed entry evidence and the exact-pool DEX snapshot were saved. ':''}I will check DEX Screener about once per minute and alert at TP1, TP2, the stop, or a severe liquidity drop. FOMO execution stays manual; spot samples can miss brief moves or gaps.`);
       } catch(error) { await this.send(escapeHtml(error instanceof Error?error.message:'Could not register that position.')); }
+    }
+    else if(command==='/exited'){
+      if(!this.executionCosts){await this.send('Execution-cost capture is unavailable.');return;}
+      try{
+        const result=await this.executionCosts.exited(args[1]||'',commandNumber(args[2]),commandNumber(args[3]),args[4]===undefined?0:commandNumber(args[4]));
+        await this.researchMilestones?.costsChanged().catch(()=>undefined);
+        const o=result.observed,m=result.modelCostBps;
+        await this.send(`✅ <b>OBSERVED EXIT SAVED</b>\n\n${escapeHtml(result.position.symbol)} · ${CHAINS[result.position.chain].name}\nObserved round-trip cost: ${o.roundTripBps.toFixed(1)} bps\nEntry vs command-time spot: ${o.entrySpotBps.toFixed(1)} bps\nExit vs command-time spot: ${o.exitSpotBps.toFixed(1)} bps\nExplicit fees: ${o.feesBps.toFixed(1)} bps\nAlert-reference movement diagnostic: ${o.entryReferenceBps.toFixed(1)} bps\nmodel:cost-model-v1: ${m===null?'not available':`${m.toFixed(1)} bps`}\nCalibration: ${escapeHtml(result.calibration.status)}\n\nThe position monitor is closed. No order was submitted.`);
+      }catch(error){await this.send(escapeHtml(error instanceof Error?error.message:'Could not save that exit.'));}
+    }
+    else if(command==='/costs'){
+      const summary=await (this.executionCosts?.summary()??this.store.executionCostSummary()),dist=(label:string,value:{count:number;median:number|null;p75:number|null;p90:number|null})=>
+        `${escapeHtml(label)}: n=${value.count} · median ${value.median===null?'n/a':value.median.toFixed(1)} · p75 ${value.p75===null?'n/a':value.p75.toFixed(1)} · p90 ${value.p90===null?'n/a':value.p90.toFixed(1)} bps`;
+      await this.send(`<b>OBSERVED EXECUTION COSTS</b>\n${dist('Overall',summary.overall)}\n\n<b>By chain</b>\n${Object.entries(summary.byChain).map(([key,value])=>dist(key,value)).join('\n')||'No completed fills.'}\n\n<b>By entry liquidity</b>\n${Object.entries(summary.byLiquidity).map(([key,value])=>dist(key,value)).join('\n')||'No completed fills.'}\n\n<b>cost-model-v1 sensitivity</b>\n${dist(`Primary $${summary.modelPrimaryUsd}`,summary.modeledPrimary)}\n${dist('$250',summary.modeled250)}\n\n<b>cost-model-v1 calibration</b>\n${escapeHtml(summary.calibration.status)} · comparable n=${summary.calibration.count}\nCoverage ${summary.calibration.coveragePct===null?'n/a':`${summary.calibration.coveragePct.toFixed(1)}%`} · median/p90 underestimation ${summary.calibration.medianUnderestimateBps===null?'n/a':summary.calibration.medianUnderestimateBps.toFixed(1)} / ${summary.calibration.p90UnderestimateBps===null?'n/a':summary.calibration.p90UnderestimateBps.toFixed(1)} bps\n\nObserved fills are manually reported; DEX snapshots are read-only. Model assumptions are not execution quotes.`);
     }
     else if (command === '/positions') {
       const positions=await this.store.openChartPositions();
@@ -183,8 +201,8 @@ export class Telegram {
     }
     else if(command==='/shadow'){
       const variants=await this.store.shadowVariantProgress(),pct=(n:number|null)=>n===null?'n/a':`${n>=0?'+':''}${n.toFixed(2)}%`,ci=(value:{low:number;high:number;blocks:number}|null,blocks:number)=>value?`95% CI [${value.low.toFixed(2)}, ${value.high.toFixed(2)}], ${value.blocks} day blocks`:`CI not estimable (${blocks} day blocks)`;
-      const lines=variants.map(v=>`<b>${escapeHtml(v.label)}</b>\nLocked: ${new Date(v.lockedStart).toISOString()}\nSignals: ${v.resolvedSignals}/${v.requiredSignals} resolved across ${v.signalDays}/${v.requiredDays} days · controls ${v.resolvedControls}\nSignal expectancy: ${pct(v.signalExpectancyPct)} · ${ci(v.signalInterval,v.signalDays)}\nUniverse control: ${pct(v.controlExpectancyPct)} · edge ${pct(v.edgePct)} · ${ci(v.edgeInterval,v.sharedDays)}\nCosts: ${v.costStatus} · promotion ${v.eligible?'ELIGIBLE FOR OWNER REVIEW':'not eligible'}\n${v.eligible?'All automatic evidence gates passed; promotion remains manual.':`Waiting on: ${escapeHtml(v.blockers.join('; '))}`}`).join('\n\n');
-      await this.send(`<b>LOCKED FORWARD SHADOW TESTS</b>\n\n${lines||'No registered shadow variants.'}\n\nShadow results never send BUY alerts. Modeled-cost results are research only and cannot pass the promotion gate.`);
+      const lines=variants.map(v=>{const views=v.costViews.map(view=>`• ${view.provenance}: ${pct(view.expectancyPct)} · ${view.availableSignals}/${view.totalSignals} costs · ${ci(view.interval,v.signalDays)} · ${escapeHtml(view.status)}${view.eligibleCostGate?' · COST GATE PASS':''}`).join('\n');return `<b>${escapeHtml(v.label)}</b>\nLocked: ${new Date(v.lockedStart).toISOString()}\nSignals: ${v.resolvedSignals}/${v.requiredSignals} resolved across ${v.signalDays}/${v.requiredDays} days · controls ${v.resolvedControls}\nUniverse control: ${pct(v.controlExpectancyPct)} · flat-view edge ${pct(v.edgePct)} · ${ci(v.edgeInterval,v.sharedDays)}\n<b>Cost views</b>\n${views}\nPromotion: ${v.eligible?'ELIGIBLE FOR OWNER REVIEW':'not eligible'} via ${escapeHtml(v.costStatus)}\n${v.eligible?'All automatic evidence gates passed; promotion remains manual.':`Waiting on: ${escapeHtml(v.blockers.join('; '))}`}`}).join('\n\n');
+      await this.send(`<b>LOCKED FORWARD SHADOW TESTS</b>\n\n${lines||'No registered shadow variants.'}\n\nShadow results never send BUY alerts. modeled:flat-bps is descriptive only; only complete observed evidence or a valid calibrated model can satisfy the cost gate. Owner review remains mandatory.`);
     }
     else if(command==='/learn'){
       const r=await this.store.chartLearningStats(this.c.researchRoundTripCostBps),pct=(n:number|null)=>n===null?'n/a':`${n.toFixed(1)}%`,number=(n:number|null)=>n===null?'n/a':n.toFixed(2);

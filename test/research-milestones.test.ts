@@ -131,3 +131,18 @@ test('configured collector activation is persisted once and prospective coverage
     assert.equal(result.activatedAt,activation);assert.equal(result.observations,2);assert.equal(result.days,2);
   }finally{await store.db.close();}
 });
+
+test('execution-cost milestones fire once without consuming BUY or SCOUT capacity',async()=>{
+  const cost=(count:number,invalidated=false)=>({overall:{count,median:250,p75:300,p90:400},byChain:{},byLiquidity:{},modelPrimaryUsd:50,
+    modeledPrimary:{count,median:300,p75:350,p90:450},modeled250:{count,median:400,p75:450,p90:550},
+    calibration:{count,coveragePct:70,medianUnderestimateBps:0,p90UnderestimateBps:100,underestimated:6,invalidated,status:invalidated?'invalidated':'valid'}});
+  let current=cost(1),h=await setup({}, {costs:async()=>current});
+  try{
+    assert.equal(await h.milestones.costsChanged(),1);assert.match(h.sent[0],/FIRST OBSERVED EXECUTION COST/);
+    current=cost(20,true);assert.equal(await h.milestones.costsChanged(),2);
+    assert.match(h.sent[1],/CALIBRATION CHECKPOINT/);assert.match(h.sent[2],/MODEL V1 INVALIDATED/);
+    assert.equal(await h.milestones.costsChanged(),0);
+    const counts=await Promise.all(['chart_setup_alerts','shortlist_alerts','alerts'].map(async table=>Number((await h.store.db.query(`SELECT count(*)::int n FROM ${table}`)).rows[0].n)));
+    assert.deepEqual(counts,[0,0,0]);
+  }finally{await h.store.db.close();}
+});

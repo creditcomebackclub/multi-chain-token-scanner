@@ -44,9 +44,21 @@ test('promotion remains blocked until sample, comparative CI, and real-cost gate
   const modeled:{variantId:string;outcome:ShadowOutcome}[]=[];
   for(let i=0;i<180;i++)modeled.push({variantId:forwardShadowVariants[0].id,outcome:outcome(SHADOW_LOCKED_START+(i%20)*DAY,8+(i%20)/10,'signal')});
   for(let i=0;i<200;i++)modeled.push({variantId:forwardShadowVariants[0].id,outcome:outcome(SHADOW_LOCKED_START+(i%20)*DAY,(i%4)-1,'control')});
-  const blocked=summarizeForwardShadow(modeled)[0];assert.equal(blocked.eligible,false);assert.ok(blocked.blockers.includes('logged real costs unavailable'));
+  const blocked=summarizeForwardShadow(modeled)[0];assert.equal(blocked.eligible,false);assert.ok(blocked.blockers.includes('no eligible observed or valid cost-model expectancy CI'));
   const real=modeled.map(row=>({...row,outcome:{...row.outcome,costSource:'logged_real' as const}}));
   const eligible=summarizeForwardShadow(real)[0];assert.equal(eligible.eligible,true);assert.deepEqual(eligible.blockers,[]);
+  assert.equal(eligible.costViews.find(view=>view.provenance==='modeled:flat-bps')?.eligibleCostGate,false);
+  assert.equal(eligible.costViews.find(view=>view.provenance==='observed')?.eligibleCostGate,true);
+});
+
+test('a complete valid v1 model view can satisfy the cost gate while flat bps never can',()=>{
+  const rows:{variantId:string;outcome:ShadowOutcome;modelCostBps?:number;modelValid?:boolean}[]=[];
+  for(let i=0;i<180;i++)rows.push({variantId:forwardShadowVariants[0].id,outcome:outcome(SHADOW_LOCKED_START+(i%20)*DAY,8+(i%20)/10,'signal'),modelCostBps:300,modelValid:true});
+  for(let i=0;i<200;i++)rows.push({variantId:forwardShadowVariants[0].id,outcome:outcome(SHADOW_LOCKED_START+(i%20)*DAY,(i%4)-1,'control')});
+  const valid=summarizeForwardShadow(rows)[0];assert.equal(valid.eligible,true);assert.equal(valid.costStatus,'model:cost-model-v1');
+  assert.equal(valid.costViews.find(view=>view.provenance==='modeled:flat-bps')?.eligibleCostGate,false);
+  const invalid=summarizeForwardShadow(rows.map(row=>row.outcome.population==='signal'?{...row,modelValid:false}:row))[0];
+  assert.equal(invalid.eligible,false);assert.equal(invalid.costViews.find(view=>view.provenance==='model:cost-model-v1')?.status,'invalidated');
 });
 
 test('store enrolls only post-lock signal and control rows and resolves them without an alert row',async()=>{

@@ -106,7 +106,7 @@ export class ChartSetupWorker {
               if (!securityGate!.allowed) { detail = `Setup withheld: GoPlus ${security!.status}`; await this.store.chartSignalDecision(id,`security_${security!.status.toLowerCase()}`); }
               else if (!chartEntryAvailable(setup,market!,Date.now())) { detail = 'Buy alert withheld: entry or quote expired during security check'; await this.store.chartSignalDecision(id,'entry_expired_during_security'); }
               else if (signal.aborted) await this.store.chartSignalDecision(id,'cycle_expired');
-              else if (await this.store.reserveChart(id,p,setup,this.telegram.chatKey,securityGate!.warnings)) {
+              else if (await this.store.reserveChart(id,p,setup,this.telegram.chatKey,securityGate!.warnings,{market:marketEvidence})) {
                 if (!await this.store.beginChartSend(id)) { await this.store.finishChartSend(id,'failed'); await this.store.chartSignalDecision(id,'paused_before_send'); detail = 'Setup withheld: alerts paused'; }
                 else {
                   try { const message = await this.telegram.send(renderSetup(p,setup,this.c,securityGate)); await this.store.finishChartSend(id,'sent',message); await this.store.chartSignalDecision(id,securityGate!.warnings.length?'sent_risk_watch':'sent'); detail = securityGate!.warnings.length?'High-risk setup watch sent with security warnings':'Setup alert sent'; }

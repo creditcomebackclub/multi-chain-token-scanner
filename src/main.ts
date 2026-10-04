@@ -16,6 +16,7 @@ import { WalletWatch } from './wallet-watch.js';
 import { ChartMonitor } from './chart-monitor.js';
 import { ResearchCollector } from './research-collection.js';
 import { ResearchMilestones } from './research-milestones.js';
+import { ExecutionCosts } from './execution-costs.js';
 
 async function main() {
   const c = config();
@@ -23,7 +24,7 @@ async function main() {
   if (c.scanMode === 'full' && c.ingestionEnabled && !c.bitqueryToken) throw new Error('Set BITQUERY_TOKEN for full scanning, or SCAN_MODE=shortlist for free discovery.');
   if ((c.pushEnabled || c.walletWatchEnabled || c.chartSetupsEnabled) && (!c.telegramToken || !c.telegramChatId)) throw new Error('PUSH_ENABLED or WALLET_WATCH_ENABLED requires Telegram bot token and private chat ID');
   if (c.telegramToken && !/^[1-9]\d*$/.test(c.telegramChatId)) throw new Error('TELEGRAM_CHAT_ID must identify one private user chat');
-  const store = new Store(postgres(c.databaseUrl));
+  const store = new Store(postgres(c.databaseUrl),c);
   await store.migrate();
   await store.ensureResearchCollectorActivations([
     ...(c.regimeCandlesEnabled?['regime' as const]:[]),
@@ -45,6 +46,8 @@ async function main() {
   const researchMilestones=milestoneTelegram?new ResearchMilestones(c,store,{chatKey:milestoneTelegram.chatKey,send:text=>milestoneTelegram.send(text)}):undefined;
   if(researchMilestones)milestoneTelegram!.attachResearchMilestones(researchMilestones);
   const dex = new DexScreener(), security = new GoPlus(c.goplusToken);
+  const executionCosts=telegram&&c.executionCostLoggingEnabled?new ExecutionCosts(c,store,dex):undefined;
+  if(executionCosts)telegram!.attachExecutionCosts(executionCosts);
   const auditRecentSecurity=async()=>{
     const pending=await store.chartSecurityAuditCandidates();
     const counts:Record<string,number>={};
@@ -85,7 +88,7 @@ async function main() {
   await store.health('goplus', 'disabled', 'Waiting for market-qualified candidate');
   await store.health('research-regime',c.regimeCandlesEnabled?'degraded':'disabled',c.regimeCandlesEnabled?'Waiting for first paced SOL/ETH/BNB candle refresh':'Regime candle collection disabled');
   await store.health('research-young-pools',c.youngPoolResearchEnabled?'degraded':'disabled',c.youngPoolResearchEnabled?'Waiting for first 10m–4h discovery cohort':'Young-pool research disabled');
-  await store.health('research-costs','disabled',c.executionCostLoggingEnabled?'No approved read-only FOMO execution quote interface; collection skipped':'Executable cost logging disabled');
+  await store.health('research-costs',executionCosts?'healthy':'disabled',executionCosts?'Manual observed-fill capture ready; exact-pool DEX comparisons are read-only and no order interface exists':'Manual execution-cost logging disabled');
   if (!walletWatch) for (const chain of c.chains) await store.health(`watch:${chain}`, 'disabled', 'Direct wallet alerts disabled');
   let helius: Helius | undefined;
   if (fullScanning && c.heliusEnabled && c.heliusKey && c.heliusPrograms.length && c.chains.includes('solana')) {
@@ -128,7 +131,7 @@ async function main() {
     finally{monitorRunning=false;}
   };
   const researchTick=async()=>{
-    if(researchRunning||stopping||!c.ingestionEnabled||!(c.regimeCandlesEnabled||c.youngPoolResearchEnabled||c.walletWatchEnabled||c.executionCostLoggingEnabled))return;
+    if(researchRunning||stopping||!c.ingestionEnabled||!(c.regimeCandlesEnabled||c.youngPoolResearchEnabled||c.walletWatchEnabled))return;
     researchRunning=true;
     try{await researchCollector.tick();}catch{await store.health('research-collection','degraded','Read-only research cycle failed; alert delivery was unaffected').catch(()=>undefined);}
     finally{researchRunning=false;}
