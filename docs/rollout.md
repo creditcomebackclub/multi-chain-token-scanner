@@ -78,3 +78,13 @@ A variant may be considered for promotion only when every item below is true:
 - [ ] The owner reviews the evidence and explicitly decides whether to change the live strategy.
 
 Intervals remain “not estimable” with fewer than three day blocks. Passing the automatic evidence checks does not promote a variant or alter BUY alerts.
+
+## Research milestone notifications
+
+`RESEARCH_MILESTONES_ENABLED` defaults to `true`. The scanner evaluates research readiness at most once per hour and sends informational messages through the same validated private Telegram channel as health notices. Milestones have their own durable idempotency keys and never read or write BUY, SCOUT, cooldown, or delivery-cap state. `/milestones` shows every checkpoint and its current status.
+
+Set `RESEARCH_COLLECTOR_ACTIVATED_AT` to the original ISO-8601 activation time before the first milestone-enabled deployment. The production Phase 2 cohort began at `2026-10-03T15:22:45Z`. The value is persisted separately for each enabled collector and an existing database record is never overwritten. Phase 4 sends one ready notice after 21 elapsed days plus 15 distinct UTC observation days per enabled collector, then a separate preferred-checkpoint notice at 28 days.
+
+Each registered shadow variant sends one notice at 25%, 50%, and 100% of its required resolved signals, one at its required distinct-day count, and one if all automatic evidence gates pass. The eligibility notice explicitly requires owner review and performs no promotion. An enabled collector with no new observation for 12 hours sends one warning for that stall and one recovery when a later observation arrives.
+
+Set `DB_VOLUME_LIMIT_MB` to the configured Postgres volume size; it defaults to 500. One-time warnings at 80% and 90% report current database usage and the largest research tables. Database size comes from PostgreSQL's database-size functions and is an operational estimate of volume pressure.

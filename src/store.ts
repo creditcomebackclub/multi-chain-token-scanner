@@ -13,6 +13,10 @@ import type { ShortlistEntry } from './shortlist.js';
 import { schema } from './schema.js';
 export interface Sql { query(sql: string, params?: any[]): Promise<{ rows: any[]; rowCount?: number | null }> }
 export interface Database extends Sql { transaction<T>(fn: (sql: Sql) => Promise<T>): Promise<T>; close(): Promise<void> }
+export type ResearchCollectorName='regime'|'young_pool';
+export type ResearchCollectorCoverage={collector:ResearchCollectorName;activatedAt:number;days:number;observations:number;lastObservationAt:number|null};
+export type ResearchMilestoneEvent={key:string;kind:string;data:any;status:'reserved'|'sent'|'unknown';reservedAt:number;sentAt:number|null;messageId:number|null};
+export type DatabaseStorage={usageMb:number;tables:{name:string;sizeMb:number}[]};
 export function postgres(url: string): Database {
   const pool = new pg.Pool({ connectionString: url, max: 8, connectionTimeoutMillis: 5000, statement_timeout: 30_000 });
   pool.on('error', () => console.error('Postgres connection unavailable'));
@@ -41,6 +45,65 @@ export class Store {
     await this.db.query("UPDATE alerts SET status='unknown',sent_at=clock_timestamp() WHERE status IN ('reserved','sending') AND reserved_at < clock_timestamp()-interval '2 minutes'");
     await this.db.query("UPDATE shortlist_alerts SET status='unknown',sent_at=clock_timestamp() WHERE status IN ('reserved','sending') AND reserved_at < clock_timestamp()-interval '2 minutes'");
     await this.db.query("UPDATE wallet_watch_alerts SET status='unknown',sent_at=clock_timestamp() WHERE status IN ('reserved','sending') AND reserved_at < clock_timestamp()-interval '2 minutes'");
+  }
+  async ensureResearchCollectorActivations(collectors:ResearchCollectorName[],configuredAt:number|null,now=Date.now()){
+    for(const collector of collectors){
+      if((await this.db.query('SELECT 1 FROM research_collector_activations WHERE collector=$1',[collector])).rows.length)continue;
+      let activatedAt=configuredAt;
+      if(activatedAt===null){
+        const provider=collector==='regime'?'research-regime':'research-young-pools';
+        const since=(await this.db.query("SELECT data->>'since' AS since FROM provider_health WHERE provider=$1",[provider])).rows[0]?.since;
+        if(since!==undefined&&Number.isFinite(Number(since)))activatedAt=Number(since);
+      }
+      if(activatedAt===null&&collector==='young_pool'){
+        const at=(await this.db.query('SELECT extract(epoch FROM min(created_at))*1000 AS at FROM young_pool_research_observations')).rows[0]?.at;
+        if(at!==null&&at!==undefined&&Number.isFinite(Number(at)))activatedAt=Number(at);
+      }
+      await this.db.query('INSERT INTO research_collector_activations(collector,activated_at) VALUES($1,$2) ON CONFLICT DO NOTHING',
+        [collector,date(activatedAt??now)]);
+    }
+  }
+  async researchCollectorCoverage(collectors:ResearchCollectorName[]):Promise<ResearchCollectorCoverage[]>{
+    const result:ResearchCollectorCoverage[]=[];
+    for(const collector of collectors){
+      const activation=(await this.db.query('SELECT extract(epoch FROM activated_at)*1000 AS at FROM research_collector_activations WHERE collector=$1',[collector])).rows[0]?.at;
+      if(activation===undefined)continue;
+      const table=collector==='regime'?'research_regime_candles':'young_pool_research_observations';
+      const row=(await this.db.query(`SELECT count(*)::int AS observations,count(DISTINCT (at AT TIME ZONE 'UTC')::date)::int AS days,
+        extract(epoch FROM max(at))*1000 AS "lastObservationAt" FROM ${table} WHERE at>=$1`,[date(Number(activation))])).rows[0];
+      result.push({collector,activatedAt:Number(activation),days:Number(row.days),observations:Number(row.observations),
+        lastObservationAt:row.lastObservationAt===null?null:Number(row.lastObservationAt)});
+    }
+    return result;
+  }
+  async claimResearchMilestoneRun(now=Date.now()):Promise<boolean>{
+    return this.db.transaction(async q=>{
+      const row=(await q.query('SELECT last_checked_at FROM research_milestone_runs WHERE id=1 FOR UPDATE')).rows[0];
+      if(new Date(row.last_checked_at).getTime()>now-HOUR)return false;
+      await q.query('UPDATE research_milestone_runs SET last_checked_at=$1 WHERE id=1',[date(now)]);return true;
+    });
+  }
+  async researchMilestoneEvents():Promise<ResearchMilestoneEvent[]>{
+    return (await this.db.query(`SELECT key,kind,data,status,extract(epoch FROM reserved_at)*1000 AS "reservedAt",
+      extract(epoch FROM sent_at)*1000 AS "sentAt",message_id AS "messageId" FROM research_milestone_events ORDER BY reserved_at,key`)).rows
+      .map(row=>({...row,reservedAt:Number(row.reservedAt),sentAt:row.sentAt===null?null:Number(row.sentAt),messageId:row.messageId===null?null:Number(row.messageId)}));
+  }
+  async claimResearchMilestone(key:string,kind:string,data:unknown):Promise<boolean>{
+    return !!(await this.db.query("INSERT INTO research_milestone_events(key,kind,data,status) VALUES($1,$2,$3,'reserved') ON CONFLICT DO NOTHING RETURNING key",
+      [key,kind,JSON.stringify(data)])).rows.length;
+  }
+  async finishResearchMilestone(key:string,status:'sent'|'unknown',messageId?:number){
+    await this.db.query("UPDATE research_milestone_events SET status=$2,message_id=$3,sent_at=CASE WHEN $2='sent' THEN clock_timestamp() ELSE NULL END WHERE key=$1 AND status='reserved'",
+      [key,status,messageId??null]);
+  }
+  async databaseStorage():Promise<DatabaseStorage>{
+    const usage=Number((await this.db.query('SELECT pg_database_size(current_database())::bigint AS bytes')).rows[0].bytes);
+    const names=['chart_candles','chart_research_observations','chart_research_outcomes','research_regime_candles','young_pool_research_observations',
+      'young_pool_research_samples','young_pool_research_outcomes','wallet_watch_research_observations','wallet_watch_research_samples','wallet_watch_research_outcomes',
+      'shadow_variant_observations','shadow_variant_outcomes'];
+    const rows=(await this.db.query(`SELECT name,pg_total_relation_size(to_regclass(name))::bigint AS bytes
+      FROM unnest($1::text[]) AS tables(name) WHERE to_regclass(name) IS NOT NULL ORDER BY bytes DESC`,[names])).rows;
+    return{usageMb:usage/1024/1024,tables:rows.map(row=>({name:String(row.name),sizeMb:Number(row.bytes)/1024/1024}))};
   }
   async saveSetupCandidates(entries: DiscoveryCandidate[], candleRetentionDays=35) {
     if (entries.length) await this.db.query(`INSERT INTO setup_candidates(chain,token,pool,data)

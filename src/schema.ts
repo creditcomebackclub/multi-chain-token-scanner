@@ -97,6 +97,21 @@ CREATE TABLE IF NOT EXISTS shadow_variant_outcomes (
   PRIMARY KEY(variant_id,observation_id),
   FOREIGN KEY(variant_id,observation_id) REFERENCES shadow_variant_observations(variant_id,observation_id)
 );
+CREATE TABLE IF NOT EXISTS research_collector_activations (
+  collector text PRIMARY KEY CHECK(collector IN ('regime','young_pool')),
+  activated_at timestamptz NOT NULL
+);
+CREATE TABLE IF NOT EXISTS research_milestone_events (
+  key text PRIMARY KEY, kind text NOT NULL, data jsonb NOT NULL,
+  status text NOT NULL CHECK(status IN ('reserved','sent','unknown')),
+  reserved_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  message_id bigint, sent_at timestamptz
+);
+CREATE TABLE IF NOT EXISTS research_milestone_runs (
+  id integer PRIMARY KEY CHECK(id=1),
+  last_checked_at timestamptz NOT NULL DEFAULT 'epoch'
+);
+INSERT INTO research_milestone_runs(id) VALUES(1) ON CONFLICT DO NOTHING;
 CREATE TABLE IF NOT EXISTS chart_positions (
   id text PRIMARY KEY, alert_id text NOT NULL REFERENCES chart_setup_alerts(id), chain text NOT NULL,
   token text NOT NULL, pool text NOT NULL, data jsonb NOT NULL,

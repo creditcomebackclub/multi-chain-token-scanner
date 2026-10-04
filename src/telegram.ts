@@ -9,6 +9,7 @@ import { scopeId } from './rollout.js';
 import { shortlistEligible, type ShortlistEntry } from './shortlist.js';
 import { walletExplorer, watchedWallets } from './wallet-watch.js';
 import type { ManagedPosition } from './chart-monitor.js';
+import type { ResearchMilestones } from './research-milestones.js';
 export const escapeHtml = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const dollars = (v: number | null) => v === null ? 'unknown' : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumSignificantDigits: 4 }).format(v);
 export function renderAlert(s: Snapshot): string {
@@ -88,6 +89,8 @@ export class Telegram {
   constructor(private c: Config, private store: Store, private http = new Http(1100), private pollHttp = new Http(1000)) {
     this.chatKey = createHash('sha256').update(`${c.telegramToken}:${c.telegramChatId}`).digest('hex');
   }
+  private researchMilestones?:Pick<ResearchMilestones,'statuses'>;
+  attachResearchMilestones(value:Pick<ResearchMilestones,'statuses'>){this.researchMilestones=value;}
   async send(text: string): Promise<number> {
     const response = await this.http.json(`https://api.telegram.org/bot${this.c.telegramToken}/sendMessage`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: this.c.telegramChatId, text, parse_mode: 'HTML', link_preview_options: { is_disabled: true } }) });
     if (response.ok !== true || !Number.isInteger(response.result?.message_id)) throw new Error('Telegram send failed or ambiguous');
@@ -127,8 +130,8 @@ export class Telegram {
     if (!m || m.chat?.type !== 'private' || String(m.chat.id) !== this.c.telegramChatId || typeof m.text !== 'string') return;
     const args=m.text.trim().split(/\s+/), command = args[0].split('@')[0].toLowerCase();
     if (command === '/start') { await this.store.validateChat(this.chatKey); await this.send(this.c.scanMode === 'shortlist'
-      ? `Private chat validated. 5M BUY alerts are ${this.c.pushEnabled ? `enabled with an independent ${MAX_ALERTS_PER_24H}-per-24h cap` : 'disabled'}. Automatic SCOUT pushes are ${this.c.scoutPushEnabled ? `enabled with a ${MAX_SCOUT_ALERTS_PER_24H}-per-24h cap` : 'off; /shortlist remains available'}. Use /setups, /stats, /research, /shadow, /learn, /security, or /lastbuy. Execution remains manual.`
-      : 'Private chat validated. Use /status, /pause, /resume, /recent, or /stats. Candidate pushes stay disabled until the observation and rollout gates pass.'); return; }
+      ? `Private chat validated. 5M BUY alerts are ${this.c.pushEnabled ? `enabled with an independent ${MAX_ALERTS_PER_24H}-per-24h cap` : 'disabled'}. Automatic SCOUT pushes are ${this.c.scoutPushEnabled ? `enabled with a ${MAX_SCOUT_ALERTS_PER_24H}-per-24h cap` : 'off; /shortlist remains available'}. Use /setups, /stats, /research, /shadow, /milestones, /learn, /security, or /lastbuy. Execution remains manual.`
+      : 'Private chat validated. Use /status, /pause, /resume, /recent, /stats, or /milestones. Candidate pushes stay disabled until the observation and rollout gates pass.'); return; }
     if ((await this.store.state()).chat_key !== this.chatKey) { await this.send('Send /start to validate this configured private chat.'); return; }
     if (command === '/pause' || command === '/resume') {
       await this.store.pause(command === '/pause');
@@ -136,6 +139,14 @@ export class Telegram {
         ? `${command === '/pause' ? 'Automatic watch alerts paused. Scanning and saved results continue.' : `Automatic watch alerts ${this.c.pushEnabled ? 'resumed' : 'remain disabled by configuration'}.`} Use /shortlist to read the latest saved results.`
         : command === '/pause' ? 'Candidate alerts paused. Observation continues.' : 'Candidate alerts resumed subject to observe-only, coverage, security, and rollout gates.');
     } else if (command === '/status') await this.send(await this.status());
+    else if(command==='/milestones'){
+      if(!this.researchMilestones){await this.send('Research milestone monitoring is unavailable.');return;}
+      const rows=await this.researchMilestones.statuses(),line=(item:(typeof rows)[number])=>{
+        const when=item.at===null?'':` · ${new Date(item.at).toISOString()}`;
+        return `• ${escapeHtml(item.label)}: <b>${escapeHtml(item.status)}</b>${when}`;
+      };
+      await this.send(`<b>RESEARCH MILESTONES</b>\n${this.c.researchMilestonesEnabled?'Monitoring enabled; evaluated at most once per hour.':'Monitoring disabled by configuration.'}\n\n${rows.map(line).join('\n')}`);
+    }
     else if (command === '/entered') {
       try {
         const position=await this.store.registerChartPosition(args[1]||'',commandNumber(args[2]),commandNumber(args[3]));
