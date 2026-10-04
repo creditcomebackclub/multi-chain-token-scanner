@@ -2,6 +2,7 @@ import { DAY, HOUR, type Config } from './config.js';
 import type { ShadowProgress } from './shadow-research.js';
 import type { DatabaseStorage, ResearchCollectorCoverage, ResearchCollectorName, Store } from './store.js';
 import { escapeHtml } from './telegram.js';
+import type { CostSummary } from './execution-costs.js';
 
 export const PHASE4_READY_DAYS=21,PHASE4_PREFERRED_DAYS=28,PHASE4_MIN_OBSERVATION_DAYS=15,COLLECTOR_STALL_HOURS=12;
 
@@ -10,6 +11,7 @@ type Inputs={
   coverage?:()=>Promise<ResearchCollectorCoverage[]>;
   shadows?:()=>Promise<ShadowProgress[]>;
   storage?:()=>Promise<DatabaseStorage>;
+  costs?:()=>Promise<CostSummary>;
 };
 type Delivery={chatKey:string;send:(text:string)=>Promise<number>};
 
@@ -35,11 +37,26 @@ export class ResearchMilestones{
   private coverage(){return this.inputs.coverage?.()??this.store.researchCollectorCoverage(this.enabledCollectors());}
   private shadows(){return this.inputs.shadows?.()??this.store.shadowVariantProgress();}
   private storage(){return this.inputs.storage?.()??this.store.databaseStorage();}
+  private costs(){return this.inputs.costs?.()??this.store.executionCostSummary();}
   private async notify(key:string,kind:string,data:unknown,message:string){
     if(!await this.store.claimResearchMilestone(key,kind,data))return false;
     try{const messageId=await this.delivery.send(message);await this.store.finishResearchMilestone(key,'sent',messageId);}
     catch{await this.store.finishResearchMilestone(key,'unknown').catch(()=>undefined);}
     return true;
+  }
+  private async costMilestones(){
+    let attempts=0;const costs=await this.costs();
+    if(costs.overall.count>=1)attempts+=Number(await this.notify('costs:first-observed','cost_first_observed',costs,
+      `💵 <b>FIRST OBSERVED EXECUTION COST</b>\n\nThe first completed manual FOMO round trip is now in the calibration dataset. Observed cost: ${costs.overall.median?.toFixed(1)??'n/a'} bps.\n\nInformational only. No alert or trading behavior changed.`));
+    if(costs.calibration.count>=20)attempts+=Number(await this.notify('costs:calibration-20','cost_calibration_20',costs,
+      `💵 <b>COST MODEL CALIBRATION CHECKPOINT</b>\n\n20 comparable observed round trips are available. Coverage: ${costs.calibration.coveragePct?.toFixed(1)??'n/a'}%. Status: ${escapeHtml(costs.calibration.status)}.\n\nUse /costs for the full distribution. Nothing changed automatically.`));
+    if(costs.calibration.invalidated)attempts+=Number(await this.notify('costs:model-v1-invalidated','cost_model_invalidated',costs,
+      `⚠️ <b>COST MODEL V1 INVALIDATED</b>\n\nObserved costs exceeded model:cost-model-v1 beyond its preregistered tolerance. The model can no longer satisfy a shadow cost gate. A separately preregistered cost-model-v2 is required.\n\nNo scanner or alert behavior changed.`));
+    return attempts;
+  }
+  async costsChanged(){
+    if(!this.c.researchMilestonesEnabled||(await this.store.state()).chat_key!==this.delivery.chatKey)return 0;
+    return this.costMilestones();
   }
   async run(now=Date.now()){
     if(!this.c.researchMilestonesEnabled)return 0;
@@ -69,6 +86,8 @@ export class ResearchMilestones{
       if(shadow.eligible)attempts+=Number(await this.notify(`shadow:${shadow.id}:owner-review`,'shadow_owner_review',
         {variantId:shadow.id,progress:shadow},`✅ <b>${escapeHtml(shadow.label)}</b> is eligible for OWNER REVIEW. Nothing has changed automatically.\n\n${summary}`));
     }
+
+    attempts+=await this.costMilestones();
 
     try{
       const storage=await this.storage(),thresholds=crossedStorageThresholds(storage.usageMb,this.c.dbVolumeLimitMb);
@@ -114,6 +133,9 @@ export class ResearchMilestones{
       rows.push(status(`shadow:${shadow.id}:owner-review`,`${shadow.label}: eligible for owner review`,monitoring));
     }
     rows.push(status('storage:80','Database storage at 80%',monitoring),status('storage:90','Database storage at 90%',monitoring));
+    rows.push(status('costs:first-observed','First observed execution cost',monitoring));
+    rows.push(status('costs:calibration-20','20-fill cost calibration checkpoint',monitoring));
+    rows.push(status('costs:model-v1-invalidated','cost-model-v1 invalidated',monitoring));
     for(const collector of ['regime','young_pool'] as const){
       const applicable=monitoring&&enabled.includes(collector),warnings=events.filter(event=>event.kind==='collector_stalled'&&event.data?.collector===collector),warning=warnings.at(-1);
       const recovery=warning?events.find(event=>event.kind==='collector_recovered'&&event.data?.warningKey===warning.key):undefined;

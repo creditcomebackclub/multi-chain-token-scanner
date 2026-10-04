@@ -1,6 +1,7 @@
 import { DAY } from './config.js';
 import type { Candle, ResearchFeatures } from './chart-pattern.js';
 import { simulatePath, type PathSimulationResult } from './chart-learning.js';
+import type { CostProvenance } from './execution-costs.js';
 
 export const SHADOW_LOCKED_START = Date.parse('2026-10-03T14:33:12Z');
 export const SHADOW_REQUIRED_SIGNALS = 180;
@@ -22,6 +23,9 @@ export type ShadowOutcome=PathSimulationResult&{
   population:'signal'|'control'; observationAt:number; costBps:number; costSource:'modeled'|'logged_real';
 };
 
+export type ShadowCostRow={variantId:string;outcome:ShadowOutcome;modelCostBps?:number|null;observedCostBps?:number|null;modelValid?:boolean;modelStatus?:string};
+export type ShadowCostView={provenance:CostProvenance;availableSignals:number;totalSignals:number;expectancyPct:number|null;interval:Interval|null;complete:boolean;eligibleCostGate:boolean;status:string};
+
 export type Interval={low:number;high:number;blocks:number};
 export type ShadowProgress={
   id:string;label:string;lockedStart:number;requiredSignals:number;requiredDays:number;
@@ -29,7 +33,7 @@ export type ShadowProgress={
   signalExpectancyPct:number|null;signalInterval:Interval|null;
   controlExpectancyPct:number|null;controlInterval:Interval|null;
   edgePct:number|null;edgeInterval:Interval|null;realCostSignals:number;
-  costStatus:'logged real'|'modeled only';eligible:boolean;blockers:string[];
+  costStatus:string;costViews:ShadowCostView[];eligible:boolean;blockers:string[];
 };
 
 export function simulateForwardShadow(
@@ -83,9 +87,10 @@ export function pairedDayBlockInterval(signals:ShadowOutcome[],controls:ShadowOu
   return high>low?{low,high,blocks:blocks.length}:null;
 }
 
-export function summarizeForwardShadow(rows:{variantId:string;outcome:ShadowOutcome}[]):ShadowProgress[]{
+const adjusted=(row:ShadowCostRow,cost:number):ShadowOutcome=>({...row.outcome,costBps:cost,netReturnPct:row.outcome.grossReturnPct-cost/100});
+export function summarizeForwardShadow(rows:ShadowCostRow[]):ShadowProgress[]{
   return forwardShadowVariants.map(variant=>{
-    const outcomes=rows.filter(row=>row.variantId===variant.id&&row.outcome.resolved).map(row=>row.outcome);
+    const variantRows=rows.filter(row=>row.variantId===variant.id&&row.outcome.resolved),outcomes=variantRows.map(row=>row.outcome);
     const signals=outcomes.filter(row=>row.population==='signal'),controls=outcomes.filter(row=>row.population==='control');
     const signalDaySet=new Set(signals.map(row=>day(row.entryAt))),controlDaySet=new Set(controls.map(row=>day(row.entryAt)));
     const sharedDaySet=new Set([...signalDaySet].filter(value=>controlDaySet.has(value)));
@@ -95,15 +100,25 @@ export function summarizeForwardShadow(rows:{variantId:string;outcome:ShadowOutc
     const sharedSignals=signals.filter(row=>sharedDaySet.has(day(row.entryAt))),sharedControls=controls.filter(row=>sharedDaySet.has(day(row.entryAt)));
     const sharedSignalMean=average(sharedSignals.map(row=>row.netReturnPct)),sharedControlMean=average(sharedControls.map(row=>row.netReturnPct));
     const edgePct=sharedSignalMean===null||sharedControlMean===null?null:sharedSignalMean-sharedControlMean;
-    const realCostSignals=signals.filter(row=>row.costSource==='logged_real').length,blockers:string[]=[];
+    const signalRows=variantRows.filter(row=>row.outcome.population==='signal'),flatView:ShadowCostView={provenance:'modeled:flat-bps',availableSignals:signals.length,totalSignals:signals.length,
+      expectancyPct:signalExpectancyPct,interval:signalInterval,complete:signals.length>0,eligibleCostGate:false,status:'descriptive only'};
+    const modelSignals=signalRows.filter(row=>row.modelCostBps!==null&&row.modelCostBps!==undefined).map(row=>adjusted(row,row.modelCostBps!));
+    const modelValid=signalRows.every(row=>row.modelValid!==false),modelComplete=signals.length>0&&modelSignals.length===signals.length;
+    const modelInterval=dayBlockInterval(modelSignals),modelView:ShadowCostView={provenance:'model:cost-model-v1',availableSignals:modelSignals.length,totalSignals:signals.length,
+      expectancyPct:average(modelSignals.map(row=>row.netReturnPct)),interval:modelInterval,complete:modelComplete,
+      eligibleCostGate:modelComplete&&modelValid&&!!modelInterval&&modelInterval.low>0,status:!modelValid?'invalidated':modelComplete?`complete · ${signalRows[0]?.modelStatus??'valid — calibration not yet evaluable'}`:'not available for every signal'};
+    const observedSignals=signalRows.map(row=>row.observedCostBps??(row.outcome.costSource==='logged_real'?row.outcome.costBps:null)).map((cost,index)=>cost===null||cost===undefined?null:adjusted(signalRows[index],cost)).filter((row):row is ShadowOutcome=>row!==null);
+    const observedComplete=signals.length>0&&observedSignals.length===signals.length,observedInterval=dayBlockInterval(observedSignals),observedView:ShadowCostView={provenance:'observed',
+      availableSignals:observedSignals.length,totalSignals:signals.length,expectancyPct:average(observedSignals.map(row=>row.netReturnPct)),interval:observedInterval,complete:observedComplete,
+      eligibleCostGate:observedComplete&&!!observedInterval&&observedInterval.low>0,status:observedComplete?'complete':'not available for every signal'};
+    const costViews=[flatView,modelView,observedView],realCostSignals=observedSignals.length,blockers:string[]=[];
     if(signals.length<variant.requiredSignals)blockers.push(`${signals.length}/${variant.requiredSignals} resolved signals`);
     if(signalDays<variant.requiredDays)blockers.push(`${signalDays}/${variant.requiredDays} signal days`);
-    if(!signalInterval||signalInterval.low<=0)blockers.push('positive expectancy CI not established');
     if(!edgeInterval||edgeInterval.low<=0)blockers.push('universe-beating CI not established');
-    if(realCostSignals<signals.length||!signals.length)blockers.push('logged real costs unavailable');
+    if(!observedView.eligibleCostGate&&!modelView.eligibleCostGate)blockers.push('no eligible observed or valid cost-model expectancy CI');
     return{id:variant.id,label:variant.label,lockedStart:variant.lockedStart,requiredSignals:variant.requiredSignals,requiredDays:variant.requiredDays,
       resolvedSignals:signals.length,resolvedControls:controls.length,signalDays,controlDays,sharedDays,signalExpectancyPct,signalInterval,controlExpectancyPct,controlInterval,
-      edgePct,edgeInterval,realCostSignals,costStatus:signals.length>0&&realCostSignals===signals.length?'logged real':'modeled only',eligible:!blockers.length,blockers};
+      edgePct,edgeInterval,realCostSignals,costStatus:observedView.eligibleCostGate?'observed':modelView.eligibleCostGate?'model:cost-model-v1':'no eligible cost view',costViews,eligible:!blockers.length,blockers};
   });
 }
 

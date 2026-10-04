@@ -42,12 +42,18 @@ export function config(env = process.env) {
   const researchRoundTripCostBps = Number(env.RESEARCH_ROUND_TRIP_COST_BPS || 200);
   const candleRetentionDays = Number(env.CANDLE_RETENTION_DAYS || 35);
   const dbVolumeLimitMb = Number(env.DB_VOLUME_LIMIT_MB || 500);
+  const shadowPositionUsd = Number(env.SHADOW_POSITION_USD || 50);
+  const fomoFeeBpsPerSide = Number(env.FOMO_FEE_BPS_PER_SIDE || 100);
+  const networkFeeUsd={solana:Number(env.NETWORK_FEE_USD_SOLANA||.10),ethereum:Number(env.NETWORK_FEE_USD_ETHEREUM||5),bnb:Number(env.NETWORK_FEE_USD_BNB||.20),robinhood:Number(env.NETWORK_FEE_USD_ROBINHOOD||.20),base:Number(env.NETWORK_FEE_USD_BASE||.20)} satisfies Record<Chain,number>;
   const researchCollectorActivatedAt = env.RESEARCH_COLLECTOR_ACTIVATED_AT ? Date.parse(env.RESEARCH_COLLECTOR_ACTIVATED_AT) : null;
   const scanMode = z.enum(['full', 'shortlist']).parse(env.SCAN_MODE || 'full');
   if (!Number.isFinite(bitqueryRequestsPerMinute) || bitqueryRequestsPerMinute <= 0 || bitqueryRequestsPerMinute > 600) throw new Error('Invalid BITQUERY_REQUESTS_PER_MINUTE');
   if (!Number.isFinite(researchRoundTripCostBps) || researchRoundTripCostBps < 0 || researchRoundTripCostBps > 2000) throw new Error('Invalid RESEARCH_ROUND_TRIP_COST_BPS');
   if (!Number.isInteger(candleRetentionDays) || candleRetentionDays < 1 || candleRetentionDays > 365) throw new Error('Invalid CANDLE_RETENTION_DAYS');
   if (!Number.isFinite(dbVolumeLimitMb) || dbVolumeLimitMb <= 0) throw new Error('Invalid DB_VOLUME_LIMIT_MB');
+  if (!Number.isFinite(shadowPositionUsd) || shadowPositionUsd <= 0) throw new Error('Invalid SHADOW_POSITION_USD');
+  if (!Number.isFinite(fomoFeeBpsPerSide) || fomoFeeBpsPerSide < 0 || fomoFeeBpsPerSide > 5000) throw new Error('Invalid FOMO_FEE_BPS_PER_SIDE');
+  if(Object.values(networkFeeUsd).some(value=>!Number.isFinite(value)||value<0))throw new Error('Invalid NETWORK_FEE_USD setting');
   if (researchCollectorActivatedAt !== null && !Number.isFinite(researchCollectorActivatedAt)) throw new Error('Invalid RESEARCH_COLLECTOR_ACTIVATED_AT');
   return {
     chains: chains as Chain[], port, databaseUrl: env.DATABASE_URL || '', scanMode,
@@ -65,7 +71,8 @@ export function config(env = process.env) {
     youngPoolResearchEnabled: bool(env.YOUNG_POOL_RESEARCH_ENABLED),
     executionCostLoggingEnabled: bool(env.EXECUTION_COST_LOGGING_ENABLED),
     researchMilestonesEnabled: bool(env.RESEARCH_MILESTONES_ENABLED, true),
-    researchCollectorActivatedAt, dbVolumeLimitMb,
+    researchCollectorActivatedAt, dbVolumeLimitMb, shadowPositionUsd, fomoFeeBpsPerSide,
+    networkFeeUsd,
   };
 }
 export type Config = ReturnType<typeof config>;

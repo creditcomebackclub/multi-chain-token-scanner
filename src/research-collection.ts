@@ -26,11 +26,9 @@ export class ResearchCollector{
   stop(){this.stopped=true;}
   async tick(){
     if(this.stopped||!this.c.ingestionEnabled)return;
-    if(!(this.c.regimeCandlesEnabled||this.c.youngPoolResearchEnabled||this.c.walletWatchEnabled||this.c.executionCostLoggingEnabled))return;
+    if(!(this.c.regimeCandlesEnabled||this.c.youngPoolResearchEnabled||this.c.walletWatchEnabled))return;
     if(this.c.regimeCandlesEnabled)await this.collectRegimeCandles();
     if(this.c.youngPoolResearchEnabled||this.c.walletWatchEnabled)await this.sampleMarketResearch();
-    if(this.c.executionCostLoggingEnabled)await this.store.health('research-costs','disabled',
-      'No approved read-only FOMO execution quote interface is available; collection skipped without substituting DEX spot prices.');
   }
   async observeYoungPools(candidates:DiscoveryCandidate[],now=Date.now()){
     if(this.stopped||!this.c.youngPoolResearchEnabled||!this.c.ingestionEnabled)return 0;

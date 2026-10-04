@@ -72,9 +72,9 @@ Review `/stats` by rule version each week. Change thresholds through the version
 A variant may be considered for promotion only when every item below is true:
 
 - [ ] The locked forward signal cohort reaches its pre-registered sample requirement (180 resolved signals and 20 distinct UTC entry days for the first challenger).
-- [ ] Its day-block bootstrap 95% expectancy interval is wholly above zero after logged real execution costs.
+- [ ] Its day-block bootstrap 95% expectancy interval is wholly above zero under a complete `observed` cost view, or under complete `model:cost-model-v1` endpoints while that preregistered model remains valid.
 - [ ] Its paired same-period edge over eligible control candles from the watched universe has a day-block bootstrap 95% interval wholly above zero.
-- [ ] Cost evidence comes from an approved, read-only execution interface. A configured cost assumption is labelled modeled and cannot pass this gate.
+- [ ] The flat-bps assumption is never used to pass the cost gate. Every cost is labelled `observed`, `model:cost-model-v1`, or `modeled:flat-bps`.
 - [ ] The owner reviews the evidence and explicitly decides whether to change the live strategy.
 
 Intervals remain “not estimable” with fewer than three day blocks. Passing the automatic evidence checks does not promote a variant or alter BUY alerts.
@@ -86,5 +86,13 @@ Intervals remain “not estimable” with fewer than three day blocks. Passing t
 Set `RESEARCH_COLLECTOR_ACTIVATED_AT` to the original ISO-8601 activation time before the first milestone-enabled deployment. The production Phase 2 cohort began at `2026-10-03T15:22:45Z`. The value is persisted separately for each enabled collector and an existing database record is never overwritten. Phase 4 sends one ready notice after 21 elapsed days plus 15 distinct UTC observation days per enabled collector, then a separate preferred-checkpoint notice at 28 days.
 
 Each registered shadow variant sends one notice at 25%, 50%, and 100% of its required resolved signals, one at its required distinct-day count, and one if all automatic evidence gates pass. The eligibility notice explicitly requires owner review and performs no promotion. An enabled collector with no new observation for 12 hours sends one warning for that stall and one recovery when a later observation arrives.
+
+Execution-cost evidence sends separate one-time notices for the first completed observed round trip, the 20-fill calibration checkpoint, and permanent `cost-model-v1` invalidation. These notices use the same milestone ledger and never consume BUY or SCOUT capacity.
+
+## Manual execution-cost evidence
+
+After a manual FOMO entry, send `/entered CONTRACT DOLLARS PRICE`. After the final manual exit, send `/exited CONTRACT DOLLARS_RECEIVED PRICE [FEES_USD]`. The scanner stores the delivered alert reference, exact chain/pool, and command-time DEX price/liquidity on both sides. It calculates observed entry/exit slippage against those snapshots and explicit fees; alert-to-entry market movement is kept as a diagnostic and is not counted as execution cost. `/costs` reports the distributions and the locked calibration test from [cost-model-v1](../research/ml/preregistration/cost-model-v1.md).
+
+The v1 model uses half of reported pool liquidity per side, a locked 1.5 impact multiplier, configured FOMO fees, configured chain transaction estimates, and a 100 bps floor. `SHADOW_POSITION_USD` defaults to $50 and the report also shows $250 sensitivity. After at least 20 comparable fills, v1 is permanently invalidated if more than 25% of observed costs exceed it by over 1 bp. Re-enabling a model after invalidation requires a new preregistered version.
 
 Set `DB_VOLUME_LIMIT_MB` to the configured Postgres volume size; it defaults to 500. One-time warnings at 80% and 90% report current database usage and the largest research tables. Database size comes from PostgreSQL's database-size functions and is an operational estimate of volume pressure.

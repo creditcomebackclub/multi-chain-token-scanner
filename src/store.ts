@@ -7,10 +7,11 @@ import { forwardShadowVariants, shadowMaturityCutoff, simulateForwardShadow, sum
 import type { AlertOutcome, ManagedPosition, PositionEvent } from './chart-monitor.js';
 import pg from 'pg';
 import { randomUUID } from 'node:crypto';
-import { DAY, HOUR, MAX_ALERTS_PER_24H, MAX_SCOUT_ALERTS_PER_24H, MINUTE, RULE_ID, rules, type Chain } from './config.js';
+import { DAY, HOUR, MAX_ALERTS_PER_24H, MAX_SCOUT_ALERTS_PER_24H, MINUTE, RULE_ID, rules, type Chain, type Config } from './config.js';
 import type { Discovery, Health, Market, Reference, Security, Snapshot, Trade, WalletTrade } from './types.js';
 import type { ShortlistEntry } from './shortlist.js';
 import { schema } from './schema.js';
+import { calibration, distribution, liquidityBucket, modeledCostBps, observedCost, type CostSummary, type EntryCostEvidence, type ExitCostEvidence, type ExecutionCostObservation } from './execution-costs.js';
 export interface Sql { query(sql: string, params?: any[]): Promise<{ rows: any[]; rowCount?: number | null }> }
 export interface Database extends Sql { transaction<T>(fn: (sql: Sql) => Promise<T>): Promise<T>; close(): Promise<void> }
 export type ResearchCollectorName='regime'|'young_pool';
@@ -36,7 +37,7 @@ const usage = (table:string) => `SELECT chain,token FROM ${table}
 export const candidateUsage = usage('alerts');
 const chartUsage=usage('chart_setup_alerts'), shortlistUsage=usage('shortlist_alerts');
 export class Store {
-  constructor(readonly db: Database) {}
+  constructor(readonly db: Database,private runtimeConfig?:Pick<Config,'shadowPositionUsd'|'fomoFeeBpsPerSide'|'networkFeeUsd'>) {}
   async migrate() {
     await this.db.query(schema);
     await this.db.query('INSERT INTO rule_versions(id,config) VALUES($1,$2) ON CONFLICT DO NOTHING', [RULE_ID, JSON.stringify(rules)]);
@@ -283,19 +284,36 @@ export class Store {
     return updates.length;
   }
   async shadowVariantProgress() {
-    const rows=(await this.db.query(`SELECT r.variant_id AS "variantId",r.data AS outcome FROM shadow_variant_outcomes r
+    const rows=(await this.db.query(`SELECT r.variant_id AS "variantId",r.data AS outcome,o.observation_id AS "observationId",c.data AS observation
+      FROM shadow_variant_outcomes r
       JOIN shadow_variant_observations o ON o.variant_id=r.variant_id AND o.observation_id=r.observation_id
+      JOIN chart_research_observations c ON c.id=o.observation_id
       WHERE o.at>=$1 ORDER BY o.at`,[date(Math.min(...forwardShadowVariants.map(v=>v.lockedStart)))])).rows as {variantId:string;outcome:ShadowOutcome}[];
-    return summarizeForwardShadow(rows);
+    const signalIds=rows.map((row:any)=>row.observation?.signalId).filter((value:any):value is string=>typeof value==='string'&&!!value);
+    const samples=signalIds.length?(await this.db.query(`SELECT signal_id AS "signalId",extract(epoch FROM at)*1000 AS at,liquidity FROM chart_signal_samples WHERE signal_id=ANY($1::text[])`,[signalIds])).rows:[];
+    const costs=await this.executionCostObservations(),bucketP75=new Map<string,number>();
+    for(const bucket of [...new Set(costs.map(row=>row.liquidityBucket))]){const value=distribution(costs.filter(row=>row.liquidityBucket===bucket&&row.observedCostBps!==null).map(row=>row.observedCostBps!)).p75;if(value!==null)bucketP75.set(bucket,value);}
+    const invalidated=!!(await this.db.query("SELECT invalidated_at FROM execution_cost_model_state WHERE version='cost-model-v1'")).rows[0]?.invalidated_at;
+    const comparable=costs.filter(row=>row.observedCostBps!==null&&row.modelCostBps!==null).map(row=>({observedCostBps:row.observedCostBps!,modelCostBps:row.modelCostBps!}));
+    const modelStatus=calibration(comparable,invalidated).status;
+    const settings=this.runtimeConfig??{shadowPositionUsd:50,fomoFeeBpsPerSide:100,networkFeeUsd:{solana:.1,ethereum:5,bnb:.2,robinhood:.2,base:.2}};
+    return summarizeForwardShadow((rows as any[]).map(row=>{
+      if(row.outcome.population!=='signal')return row;
+      const entryLiquidity=Number(row.observation?.evidence?.market?.liquidity),entryBucket=Number.isFinite(entryLiquidity)?liquidityBucket(entryLiquidity):null;
+      const signalSamples=samples.filter(sample=>sample.signalId===row.observation?.signalId&&Math.abs(Number(sample.at)-Number(row.outcome.exitAt))<=10*MINUTE).sort((a,b)=>Math.abs(Number(a.at)-Number(row.outcome.exitAt))-Math.abs(Number(b.at)-Number(row.outcome.exitAt)));
+      const exitLiquidity=Number(signalSamples[0]?.liquidity),modelCost=modeledCostBps({dollars:settings.shadowPositionUsd,entryLiquidity,exitLiquidity,
+        feeBpsPerSide:settings.fomoFeeBpsPerSide,networkFeeUsd:settings.networkFeeUsd[row.outcome.chain as Chain]});
+      return{...row,modelCostBps:modelCost,observedCostBps:entryBucket?bucketP75.get(entryBucket)??null:null,modelValid:!invalidated,modelStatus};
+    }));
   }
-  async reserveChart(id: string, pair: DiscoveryCandidate, setup: Setup, chatKey: string, riskWarnings: string[] = []): Promise<boolean> {
+  async reserveChart(id: string, pair: DiscoveryCandidate, setup: Setup, chatKey: string, riskWarnings: string[] = [], evidence?:unknown): Promise<boolean> {
     return this.db.transaction(async q => {
       const st = (await q.query('SELECT *,clock_timestamp() AS now FROM scanner_state WHERE id=1 FOR UPDATE')).rows[0];
       const now = new Date(st.now).getTime();
       if (st.paused || st.chat_key !== chatKey || now - setup.at > 10 * MINUTE || setup.at > now) return false;
       const recent = (await q.query(chartUsage)).rows;
       if (recent.length >= MAX_ALERTS_PER_24H || recent.some(r => r.chain === pair.chain && r.token === pair.token)) return false;
-      return !!(await q.query("INSERT INTO chart_setup_alerts(id,chain,token,pool,data,status) VALUES($1,$2,$3,$4,$5,'reserved') ON CONFLICT DO NOTHING RETURNING id", [id,pair.chain,pair.token,pair.pool,JSON.stringify({pair,setup,plan:chartTradePlan(setup),riskWarnings})])).rows.length;
+      return !!(await q.query("INSERT INTO chart_setup_alerts(id,chain,token,pool,data,status) VALUES($1,$2,$3,$4,$5,'reserved') ON CONFLICT DO NOTHING RETURNING id", [id,pair.chain,pair.token,pair.pool,JSON.stringify({pair,setup,plan:chartTradePlan(setup),riskWarnings,evidence:evidence??null})])).rows.length;
     });
   }
   async beginChartSend(id: string) {
@@ -327,6 +345,12 @@ export class Store {
       LEFT JOIN LATERAL (SELECT price,liquidity,at FROM chart_alert_samples WHERE alert_id=a.id ORDER BY at DESC LIMIT 1) s ON true
       WHERE a.status='sent' ORDER BY a.sent_at DESC LIMIT 1`)).rows[0];
     return row ? {...row,sentAt:Number(row.sentAt),lastPrice:row.lastPrice===null?null:Number(row.lastPrice),lastLiquidity:row.lastLiquidity===null?null:Number(row.lastLiquidity),lastSampleAt:row.lastSampleAt===null?null:Number(row.lastSampleAt)} : undefined;
+  }
+  async chartAlertForEntry(token:string){
+    const rows=(await this.db.query(`SELECT id,chain,token,pool,data,extract(epoch FROM sent_at)*1000 AS "sentAt" FROM chart_setup_alerts
+      WHERE status='sent' AND sent_at>clock_timestamp()-interval '24 hours' ORDER BY sent_at DESC`)).rows;
+    const row=rows.find(item=>item.token===token||String(item.token).toLowerCase()===token.toLowerCase());
+    return row?{...row,sentAt:Number(row.sentAt)} as {id:string;chain:Chain;token:string;pool:string;data:any;sentAt:number}:undefined;
   }
   async chartAlertsForTracking(now=Date.now()): Promise<{id:string;chain:Chain;token:string;pool:string;sentAt:number;data:any;outcome?:AlertOutcome}[]> {
     return (await this.db.query(`SELECT a.id,a.chain,a.token,a.pool,a.data,extract(epoch FROM a.sent_at)*1000 AS "sentAt",o.data AS outcome FROM chart_setup_alerts a
@@ -401,7 +425,7 @@ export class Store {
   async saveChartSignalSecurityAudit(id:string,security:unknown) {
     await this.db.query(`UPDATE chart_signals SET data=data||jsonb_build_object('evidence',coalesce(data->'evidence','{}'::jsonb)||jsonb_build_object('security',$2::jsonb)),updated_at=clock_timestamp() WHERE id=$1`,[id,JSON.stringify(security)]);
   }
-  async registerChartPosition(token:string,amountUsd:number,entry:number): Promise<ManagedPosition> {
+  async registerChartPosition(token:string,amountUsd:number,entry:number,costEntry?:EntryCostEvidence): Promise<ManagedPosition> {
     if (!token || !Number.isFinite(amountUsd) || amountUsd<=0 || !Number.isFinite(entry) || entry<=0) throw new Error('Use /entered CONTRACT DOLLARS PRICE with positive numbers.');
     return this.db.transaction(async q=>{
       const rows=(await q.query(`SELECT id,chain,token,pool,data,extract(epoch FROM sent_at)*1000 AS sent_ms FROM chart_setup_alerts
@@ -414,10 +438,57 @@ export class Store {
       if (entry<plan.entryMin || entry>plan.entryMax) throw new Error(`That price is outside the alert entry range ${plan.entryMin}–${plan.entryMax}.`);
       const position:ManagedPosition={id:randomUUID(),alertId:alert.id,chain:alert.chain,token:alert.token,pool:alert.pool,symbol:String(pair.symbol||'?').slice(0,30),amountUsd,entry,stop:plan.stop,tp1:entry*1.05,tp2:entry*1.10,initialLiquidity:pair.liquidity,openedAt:Date.now(),stage:'open',status:'open'};
       await q.query('INSERT INTO chart_positions(id,alert_id,chain,token,pool,data,status) VALUES($1,$2,$3,$4,$5,$6,\'open\')',[position.id,position.alertId,position.chain,position.token,position.pool,JSON.stringify(position)]);
+      if(costEntry)await q.query(`INSERT INTO execution_cost_observations(position_id,chain,token,pool,entry_data,entry_liquidity_bucket)
+        VALUES($1,$2,$3,$4,$5,$6)`,[position.id,position.chain,position.token,position.pool,JSON.stringify(costEntry),liquidityBucket(costEntry.liquidity)]);
       return position;
     });
   }
   async openChartPositions():Promise<ManagedPosition[]> { return (await this.db.query("SELECT data FROM chart_positions WHERE status='open' ORDER BY opened_at")).rows.map(row=>row.data); }
+  async openChartPosition(token:string):Promise<ManagedPosition|undefined>{
+    return (await this.db.query("SELECT data FROM chart_positions WHERE status='open' AND lower(token)=lower($1) ORDER BY opened_at DESC LIMIT 1",[token])).rows[0]?.data;
+  }
+  async chartPositionForExit(token:string):Promise<ManagedPosition|undefined>{
+    return (await this.db.query(`SELECT p.data FROM chart_positions p JOIN execution_cost_observations e ON e.position_id=p.id
+      WHERE lower(p.token)=lower($1) AND e.completed_at IS NULL ORDER BY p.opened_at DESC LIMIT 1`,[token])).rows[0]?.data;
+  }
+  async completeExecutionCost(positionId:string,exit:ExitCostEvidence,c:{fomoFeeBpsPerSide:number;networkFeeUsd:Record<Chain,number>}){
+    return this.db.transaction(async q=>{
+      const row=(await q.query(`SELECT e.entry_data,e.chain,p.data AS position FROM execution_cost_observations e
+        JOIN chart_positions p ON p.id=e.position_id WHERE e.position_id=$1 FOR UPDATE`,[positionId])).rows[0];
+      if(!row)throw new Error('This position predates execution-cost capture. Close it with /closed, or use a newly entered position.');
+      if((await q.query('SELECT 1 FROM execution_cost_observations WHERE position_id=$1 AND completed_at IS NOT NULL',[positionId])).rows.length)throw new Error('That execution-cost observation is already complete.');
+      const entry=row.entry_data as EntryCostEvidence,observed=observedCost(entry,exit),model=modeledCostBps({dollars:entry.dollars,entryLiquidity:entry.liquidity,
+        exitLiquidity:exit.liquidity,feeBpsPerSide:c.fomoFeeBpsPerSide,networkFeeUsd:c.networkFeeUsd[row.chain as Chain]});
+      await q.query(`UPDATE execution_cost_observations SET exit_data=$2,observed_cost_bps=$3,model_cost_bps=$4,completed_at=clock_timestamp() WHERE position_id=$1`,
+        [positionId,JSON.stringify(exit),observed.roundTripBps,model]);
+      await q.query(`UPDATE chart_positions SET status='closed',closed_at=clock_timestamp(),data=jsonb_set(data,'{status}','"closed"') WHERE id=$1`,[positionId]);
+      const comparable=(await q.query(`SELECT observed_cost_bps AS observed,model_cost_bps AS model FROM execution_cost_observations
+        WHERE completed_at IS NOT NULL AND observed_cost_bps IS NOT NULL AND model_cost_bps IS NOT NULL`)).rows.map(value=>({observedCostBps:Number(value.observed),modelCostBps:Number(value.model)}));
+      const state=(await q.query("SELECT invalidated_at FROM execution_cost_model_state WHERE version='cost-model-v1' FOR UPDATE")).rows[0];
+      const result=calibration(comparable,!!state?.invalidated_at);
+      if(result.invalidated&&!state?.invalidated_at)await q.query("UPDATE execution_cost_model_state SET invalidated_at=clock_timestamp(),evidence=$1,updated_at=clock_timestamp() WHERE version='cost-model-v1'",[JSON.stringify(result)]);
+      else await q.query("UPDATE execution_cost_model_state SET evidence=$1,updated_at=clock_timestamp() WHERE version='cost-model-v1'",[JSON.stringify(result)]);
+      return{observed,modelCostBps:model,calibration:result};
+    });
+  }
+  async executionCostObservations():Promise<ExecutionCostObservation[]>{
+    return (await this.db.query(`SELECT position_id AS "positionId",chain,token,pool,entry_data AS entry,exit_data AS exit,
+      entry_liquidity_bucket AS "liquidityBucket",observed_cost_bps AS "observedCostBps",model_cost_bps AS "modelCostBps"
+      FROM execution_cost_observations ORDER BY completed_at NULLS LAST`)).rows.map(row=>({...row,
+        observedCostBps:row.observedCostBps===null?null:Number(row.observedCostBps),modelCostBps:row.modelCostBps===null?null:Number(row.modelCostBps),
+        observedProvenance:row.observedCostBps===null?null:'observed' as const,modelProvenance:row.modelCostBps===null?null:'model:cost-model-v1' as const}));
+  }
+  async executionCostSummary():Promise<CostSummary>{
+    const rows=(await this.executionCostObservations()).filter(row=>row.exit&&row.observedCostBps!==null),values=rows.map(row=>row.observedCostBps!);
+    const grouped=(key:(row:ExecutionCostObservation)=>string)=>Object.fromEntries([...new Set(rows.map(key))].sort().map(value=>[value,distribution(rows.filter(row=>key(row)===value).map(row=>row.observedCostBps!))]));
+    const state=(await this.db.query("SELECT invalidated_at FROM execution_cost_model_state WHERE version='cost-model-v1'")).rows[0];
+    const settings=this.runtimeConfig??{shadowPositionUsd:50,fomoFeeBpsPerSide:100,networkFeeUsd:{solana:.1,ethereum:5,bnb:.2,robinhood:.2,base:.2}};
+    const modeled=(dollars:number)=>distribution(rows.map(row=>modeledCostBps({dollars,entryLiquidity:row.entry.liquidity,exitLiquidity:row.exit!.liquidity,
+      feeBpsPerSide:settings.fomoFeeBpsPerSide,networkFeeUsd:settings.networkFeeUsd[row.chain]})).filter((value):value is number=>value!==null));
+    return{overall:distribution(values),byChain:grouped(row=>row.chain),byLiquidity:grouped(row=>row.liquidityBucket),
+      calibration:calibration(rows.filter(row=>row.modelCostBps!==null).map(row=>({observedCostBps:row.observedCostBps!,modelCostBps:row.modelCostBps!})),!!state?.invalidated_at),
+      modelPrimaryUsd:settings.shadowPositionUsd,modeledPrimary:modeled(settings.shadowPositionUsd),modeled250:modeled(250)};
+  }
   async closeChartPosition(token:string):Promise<boolean> {
     const row=await this.db.query("UPDATE chart_positions SET status='closed',closed_at=clock_timestamp(),data=jsonb_set(data,'{status}','\"closed\"') WHERE status='open' AND lower(token)=lower($1) RETURNING id",[token]);
     return !!row.rows.length;
