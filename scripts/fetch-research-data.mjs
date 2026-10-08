@@ -11,14 +11,18 @@ const REPO='multi-chain-token-scanner';
 const DATA_DIR=path.resolve('research/ml/data');
 const META_PATH=path.join(DATA_DIR,'snapshot.meta.json');
 
-export async function uncompressedSha256(file){
+export async function artifactSha256(file,compressed=true){
   const hash=createHash('sha256');
-  await pipeline(createReadStream(file),createGunzip(),new Writable({write(chunk,_encoding,done){hash.update(chunk);done();}}));
+  const sink=new Writable({write(chunk,_encoding,done){hash.update(chunk);done();}});
+  if(compressed)await pipeline(createReadStream(file),createGunzip(),sink);
+  else await pipeline(createReadStream(file),sink);
   return hash.digest('hex');
 }
 
-export async function verifyArtifact(file,expected){
-  try{return (await uncompressedSha256(file))===expected;}catch{return false;}
+export async function uncompressedSha256(file){return artifactSha256(file,true);}
+
+export async function verifyArtifact(file,expected,compressed=true){
+  try{return (await artifactSha256(file,compressed))===expected;}catch{return false;}
 }
 
 async function download(url,file){
@@ -29,11 +33,14 @@ async function download(url,file){
 
 export async function fetchResearchData({metaPath=META_PATH,dataDir=DATA_DIR}={}){
   const meta=JSON.parse(await readFile(metaPath,'utf8'));
-  const artifacts=[meta.paths,meta.exit_grid,meta.edge_exit_grid].filter(Boolean);
+  const artifacts=meta.artifacts??[meta.paths,meta.exit_grid,meta.edge_exit_grid].filter(Boolean);
   await mkdir(dataDir,{recursive:true});
   for(const artifact of artifacts){
-    const file=path.join(dataDir,artifact.file),expected=artifact.uncompressed_csv_sha256;
-    if(await verifyArtifact(file,expected)){console.log(`${artifact.file}: verified`);continue;}
+    if(artifact.file!==path.basename(artifact.file))throw new Error('Artifact filename must not contain a directory');
+    const file=path.join(dataDir,artifact.file),expected=artifact.sha256??artifact.uncompressed_csv_sha256;
+    const compressed=artifact.gzip??true;
+    if(!/^[a-f0-9]{64}$/.test(expected??''))throw new Error(`Missing SHA-256 for ${artifact.file}`);
+    if(await verifyArtifact(file,expected,compressed)){console.log(`${artifact.file}: verified`);continue;}
     const tag=artifact.release;
     if(!tag)throw new Error(`Missing release tag for ${artifact.file} in ${metaPath}`);
     const partial=`${file}.part`;
@@ -42,7 +49,7 @@ export async function fetchResearchData({metaPath=META_PATH,dataDir=DATA_DIR}={}
     console.log(`${artifact.file}: downloading ${tag}`);
     try{
       await download(url,partial);
-      if(!await verifyArtifact(partial,expected))throw new Error(`${artifact.file}: SHA-256 mismatch after download`);
+      if(!await verifyArtifact(partial,expected,compressed))throw new Error(`${artifact.file}: SHA-256 mismatch after download`);
       await rename(partial,file);
       console.log(`${artifact.file}: verified`);
     }catch(error){await rm(partial,{force:true});throw error;}
@@ -50,5 +57,9 @@ export async function fetchResearchData({metaPath=META_PATH,dataDir=DATA_DIR}={}
 }
 
 if(import.meta.url===new URL(process.argv[1],`file://${process.cwd()}/`).href){
-  fetchResearchData().catch(error=>{console.error(error instanceof Error?error.message:String(error));process.exitCode=1;});
+  const options=process.argv.includes('--confirmation')?{
+    metaPath:path.resolve('research/ml/reports/strategy-discovery-v1/confirmation-artifact.json'),
+    dataDir:path.join(DATA_DIR,'strategy-discovery-v1'),
+  }:{};
+  fetchResearchData(options).catch(error=>{console.error(error instanceof Error?error.message:String(error));process.exitCode=1;});
 }

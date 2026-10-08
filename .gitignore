@@ -17,5 +17,8 @@ research/ml/data/synthetic.csv
 research/ml/data/paths.csv.gz
 research/ml/data/exit-grid.csv.gz
 research/ml/data/edge-exit-grid.csv.gz
+research/ml/data/strategy-discovery-v1/
+research/ml/data/discovery-replay.csv
+research/ml/data/discovery-replay.csv.part
 !research/ml/data/snapshot.csv
 !research/ml/data/snapshot.meta.json

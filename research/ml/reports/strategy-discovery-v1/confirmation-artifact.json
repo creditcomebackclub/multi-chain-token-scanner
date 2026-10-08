@@ -1,0 +1,31 @@
+{
+  "description": "Frozen read-only production export for the October 3\u20137 UTC retrospective confirmation. replay.csv is derived from snapshot.csv and paths.csv.gz, not a release asset. Gzip hashes cover decompressed content. exporter.mjs is the exact source used for this export, before adding its own source-hash metadata.",
+  "cutoff": "2026-10-08T00:00:00.000Z",
+  "exported_at": "2026-10-08T16:04:29.659Z",
+  "artifacts": [
+    {
+      "file": "snapshot.csv",
+      "release": "research-discovery-confirmation-2026-10-08",
+      "sha256": "cd1fd693ee98c7df083b814c3ccec18e9a5cd540242e1d57fb3d7896884e44e1",
+      "gzip": false
+    },
+    {
+      "file": "paths.csv.gz",
+      "release": "research-discovery-confirmation-2026-10-08",
+      "sha256": "f026f82eb989874ffb0f93e9fa584204e01d057e80dad3f3ca4e6bdd7ff8ad70",
+      "gzip": true
+    },
+    {
+      "file": "snapshot.meta.json",
+      "release": "research-discovery-confirmation-2026-10-08",
+      "sha256": "4f7c9487a19bf766aeb5f2290249e6692709a73e40391caa5189dd6ec65014ef",
+      "gzip": false
+    },
+    {
+      "file": "exporter.mjs",
+      "release": "research-discovery-confirmation-2026-10-08",
+      "sha256": "0fedfb75777c88428590108bd2108574a59b323a2aa0b8a95f7bb6990f98010d",
+      "gzip": false
+    }
+  ]
+}

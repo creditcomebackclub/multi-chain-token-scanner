@@ -1,0 +1,31 @@
+{
+  "strategy": "volume_ignition|trail",
+  "status": "research candidate",
+  "worth_prospective_testing": false,
+  "alerts_enabled": false,
+  "registration": "fomo-strategy-discovery-v1",
+  "minimum_forward_trades": 100,
+  "minimum_forward_days": 20,
+  "primary_delay_minutes": 5,
+  "modeled_round_trip_cost_bps": 200,
+  "development_snapshot_sha256": "1aea41b8e94dde453f19395984a5495527a6ff5e5a643cd515f61f034b4c02d6",
+  "development_replay_sha256": "4bab51cf20734be60e3426a32f0038c5e5d3bb068e61bb7ae21ef0420ac334fb",
+  "registration_sha256": "c9155c3da04cd2c55c988c262cca178c78bdf317dd85df90828e5c7e4d23b29e",
+  "model_features": [
+    "volumeRatio",
+    "atrPct",
+    "bodyPct",
+    "closePosition",
+    "upperWickPct",
+    "lowerWickPct",
+    "ema9SlopePct",
+    "ema21SlopePct",
+    "priceToEma9Pct",
+    "ema9ToEma21Pct",
+    "priceToSma50Pct",
+    "priorPeakDrawdownPct",
+    "supportTestCount",
+    "supportTouchAgeBars"
+  ],
+  "ridge_alpha": 10
+}

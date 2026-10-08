@@ -14,6 +14,7 @@ It has no wallet integration, transaction signing, or trade execution. An automa
 - Removing `riskPct` retained **95.9%** of logistic AUC and **89.8%** of gradient-boosting AUC. Stop-distance geometry contributed to ranking, but did not explain all of it.
 - Naive shuffled validation reported **0.177 Brier** versus **0.224** under purged walk-forward validation, a **0.047-point optimism gap**.
 - **Phase 1 found no promotable memecoin edge.** All 126 fat-tail signal cells with enough resolved trades were negative in sample, but none of the still-open seven-day survivors has a complete seven-day path yet. The seven-day-purged comparison, pool-age selection, and order-flow models therefore need a longer forward history; the market-regime test is blocked on Phase 2 candles, and the matched avoid filter was not supported.
+- **Focused discovery's frozen volume-ignition lead failed confirmation.** Development averaged **+0.34%** after modeled 200bps costs across 16 resolved trades (95% day-block CI **−1.58% to +1.33%**, familywise permutation **p=0.219**). On October 3–7, the unchanged candidate averaged **−0.45%** across 23 resolved trades (95% CI **−3.25% to +1.68%**), **−1.45%** at 300bps, and **−0.90%** without its best winner. Only **23 of 32** attempts resolved. This chronological confirmation is still retrospective, not prospective evidence. See [the separate discovery report](research/ml/reports/strategy-discovery-v1/REPORT.md).
 
 The portfolio research question is whether point-in-time 5-minute setup features predict TP1-first outcomes better than the hand-written rules after modeled costs. The offline Python study uses expanding-window validation, purges overlapping 24-hour label windows, preserves post-test embargoes in later training folds, applies a 24-hour pre-test gap, keeps repeated token/support groups together, and selects model thresholds and calibration only inside training folds.
 
@@ -35,6 +36,22 @@ npm run research:fetch-data
 The command downloads all three files and verifies their decompressed SHA-256 hashes against `research/ml/data/snapshot.meta.json`. `exit-grid.csv.gz` and `edge-exit-grid.csv.gz` are derived from the committed `snapshot.csv`, `paths.csv.gz`, and the TypeScript path simulator, so both are regenerable from the path artifact; the release includes them to avoid repeating the 432-cell and 144-cell simulations.
 
 The export contains one canonical row per research observation with an exact next-bar entry candle, labels delivered setups as `source=alert` rather than duplicating them, and omits wallet addresses, Telegram identity, and credential data. It writes compressed seven-day OHLCV paths, the 432-cell legacy exit grid, and the 144-cell fat-tail/ladder grid. The TypeScript path simulator exactly reproduces the existing shadow simulator under the current rule before testing alternatives. Models remain offline and cannot affect live alerts.
+
+### Focused strategy discovery
+
+The separately pushed [FOMO discovery registration](research/ml/preregistration/fomo-strategy-discovery-v1.md) compares support reclaims, trend pullbacks, volume ignition, and a fixed return-ranking model against three exit structures. It tests net trade returns with a full five-minute entry delay, 100–300bps costs, one attempted entry per token/day, and past-only daily selection. The existing September 26–October 2 snapshot is reused development data; it cannot certify a new live edge. Missing entries and path gaps stay unresolved. Models cannot change alerts or the existing shadow challenger.
+
+After fetching the path artifact and installing the Python research dependencies, run `npm run research:discover` for development only. The [discovery report](research/ml/reports/strategy-discovery-v1/REPORT.md), input hashes, candidate specification, and attempted-trade ledger make the comparison reproducible. Tests and CI use synthetic data and do not require the large artifacts or production access.
+
+The frozen October 8 export is published on the data-only [confirmation release](https://github.com/creditcomebackclub/multi-chain-token-scanner/releases/tag/research-discovery-confirmation-2026-10-08), outside Git. `npm run research:fetch-confirmation` verifies the snapshot, decompressed paths, metadata, and exact exporter source against the committed [artifact manifest](research/ml/reports/strategy-discovery-v1/confirmation-artifact.json). Its replay is regenerable from the snapshot and paths:
+
+```sh
+npm run research:fetch-confirmation
+node --import tsx scripts/replay-strategy-discovery.mjs research/ml/data/strategy-discovery-v1/snapshot.csv research/ml/data/strategy-discovery-v1/paths.csv.gz research/ml/data/strategy-discovery-v1/replay.csv
+PYTHONPATH=research/ml research/ml/.venv/bin/python -m scanner_ml.strategy_discovery --snapshot research/ml/data/snapshot.csv --replay research/ml/data/discovery-replay.csv --confirmation-snapshot research/ml/data/strategy-discovery-v1/snapshot.csv --confirmation-replay research/ml/data/strategy-discovery-v1/replay.csv
+```
+
+For another authorized read-only export, `node scripts/export-strategy-discovery.mjs --railway --tunnel` temporarily opens the existing Railway SSH connection and closes it after export, without changing Railway variables or deploying. The confirmation cutoff and candidate remain fixed; a later export cannot add newer outcomes to this test. Picking a different candidate after seeing confirmation requires another independent test.
 
 ### Optional read-only research collection
 
