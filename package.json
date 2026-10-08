@@ -15,6 +15,7 @@
     "approve-rollout": "node --import tsx --env-file-if-exists=.env src/approve.ts",
     "research:export": "npm run build && node --env-file-if-exists=.env scripts/export-ml-dataset.mjs",
     "research:fetch-data": "node scripts/fetch-research-data.mjs",
+    "research:fetch-confirmation": "node scripts/fetch-research-data.mjs --confirmation",
     "research:discover": "node --import tsx scripts/replay-strategy-discovery.mjs research/ml/data/snapshot.csv research/ml/data/paths.csv.gz research/ml/data/discovery-replay.csv && PYTHONPATH=research/ml research/ml/.venv/bin/python -m scanner_ml.strategy_discovery --snapshot research/ml/data/snapshot.csv --replay research/ml/data/discovery-replay.csv"
   },
   "dependencies": { "pg": "^8.16.3", "ws": "^8.18.3", "zod": "^4.1.5", "decimal.js": "^10.6.0" },

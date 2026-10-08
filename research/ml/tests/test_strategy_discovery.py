@@ -181,6 +181,9 @@ def test_confirmation_cannot_replace_the_frozen_candidate_with_a_later_winner(tm
     assert result['confirmation']['volume_ignition|runner']['expectancy']['estimate'] == 20
     assert result['frozen_confirmation_checks']['mean_at_200bps'] == -3
     assert result['frozen_confirmation_checks']['mean_at_300bps'] == -4
+    assert len(result['confirmation_sensitivity']) == 6
+    assert next(item['mean'] for item in result['confirmation_sensitivity']
+                if item['delay_minutes'] == 5 and item['cost_bps'] == 300) == -4
     assert result['worth_prospective_testing'] is False
     assert result['live_promotable'] is False
     report = (tmp_path/'report/REPORT.md').read_text()

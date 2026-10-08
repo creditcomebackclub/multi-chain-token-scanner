@@ -344,11 +344,25 @@ def run_study(snapshot: Path, replay: Path, out: Path, confirmation_snapshot: Pa
     baseline = {exit: candidate_rows(frame,"baseline") for exit,frame in development.items()}
     null = permutation_diagnostic(development,candidates,selected,permutations)
     confirmation_metadata = None
-    confirm, confirm_frames = {}, {}
+    confirm, confirm_frames, confirmation_sensitivity = {}, {}, []
     if confirmation_snapshot and confirmation_replay:
         fresh, confirmation_metadata = load_inputs(confirmation_snapshot, confirmation_replay)
         confirm_frames = {exit: fresh[f"{exit}:1"].loc[fresh[f"{exit}:1"].day.ge(DEVELOPMENT_END)].reset_index(drop=True) for exit in EXITS}
         confirm = confirmation_rows(development, confirm_frames)
+        if frozen:
+            for delay in [0,1]:
+                diagnostic_development={exit:all_frames[f'{exit}:{delay}'].loc[all_frames[f'{exit}:{delay}'].day.lt(DEVELOPMENT_END)].copy()
+                                        for exit in EXITS}
+                diagnostic_test={exit:fresh[f'{exit}:{delay}'].loc[fresh[f'{exit}:{delay}'].day.ge(DEVELOPMENT_END)].copy()
+                                 for exit in EXITS}
+                for cost in [100,200,300]:
+                    train={exit:frame.assign(net_return_pct=frame.gross_return_pct-cost/100) for exit,frame in diagnostic_development.items()}
+                    test={exit:frame.assign(net_return_pct=frame.gross_return_pct-cost/100) for exit,frame in diagnostic_test.items()}
+                    rows=confirmation_rows(train,test)[frozen]
+                    known=rows.loc[rows.resolved & rows.net_return_pct.notna()]
+                    confirmation_sensitivity.append({'delay_minutes':delay*5,'cost_bps':cost,
+                                                     'mean':float(known.net_return_pct.mean()),
+                                                     'attempts':len(rows),'resolved':len(known)})
     confirmation_summary = {name:summary(rows,samples) for name,rows in confirm.items()}
     confirmation_baselines = {exit:summary(candidate_rows(frame,'baseline'),samples)
                               for exit,frame in confirm_frames.items()}
@@ -389,6 +403,7 @@ def run_study(snapshot: Path, replay: Path, out: Path, confirmation_snapshot: Pa
               "candidate_count":len(CANDIDATES),"development":summaries,"baselines":{exit:summary(rows,samples) for exit,rows in baseline.items()},
               "nested":summary(selected,samples),"choices":choices,"frozen_candidate":frozen,
               "confirmation":confirmation_summary,"confirmation_baselines":confirmation_baselines,
+              "confirmation_sensitivity":confirmation_sensitivity,
               "frozen_confirmation_checks":confirmation_checks,"comparisons":comparisons,"sensitivity":sensitivities,"permutation":null,
               "worth_prospective_testing":worth_testing,"live_promotable":False}
     out.mkdir(parents=True,exist_ok=True)
@@ -422,6 +437,11 @@ def run_study(snapshot: Path, replay: Path, out: Path, confirmation_snapshot: Pa
                            f"at 300bps: **{fmt(confirmation_checks['mean_at_300bps'],'%')}**; "
                            f"without its best winner at 200bps: **{fmt(confirmation_checks['mean_without_best'],'%')}**. "
                            f"The registered confirmation criterion is **{'met' if worth_testing else 'not met'}**.")
+    confirmation_sensitivity_rows=['| Delay | 100bps | 200bps | 300bps |','|---|---:|---:|---:|']
+    for delay in [0,5]:
+        values=[next((item['mean'] for item in confirmation_sensitivity if item['delay_minutes']==delay and item['cost_bps']==cost),math.nan)
+                for cost in [100,200,300]]
+        confirmation_sensitivity_rows.append(f'| {delay}m | '+' | '.join(fmt(value,'%') for value in values)+' |')
     report=f"""# Focused FOMO strategy discovery v1
 
 **Retrospective research; modeled fills and costs. No validated BUY strategy or live change.**
@@ -466,6 +486,8 @@ Selected strategy: {selected_summary['resolved']} resolved trades, {fmt(selected
 
 {confirmation_line}
 
+{('### Frozen-candidate cost and delay diagnostics' + chr(10) + chr(10) + chr(10).join(confirmation_sensitivity_rows) + chr(10) + chr(10) + 'These retain the frozen strategy family and exits. Only the registered 5m / 200bps case determines the primary confirmation result; diagnostics cannot replace it.') if confirmation_sensitivity else ''}
+
 {('### Same-period eligible-candle baselines' + chr(10) + chr(10) + table(confirmation_baselines)) if confirmation_baselines else ''}
 
 All rows above are prespecified diagnostics. The single selected candidate is frozen from development; confirmation outcomes cannot change it. October 3–7 observations predate registration, so even this confirmation is retrospective.
@@ -502,7 +524,13 @@ node --import tsx scripts/replay-strategy-discovery.mjs research/ml/data/snapsho
 PYTHONPATH=research/ml research/ml/.venv/bin/python -m scanner_ml.strategy_discovery --snapshot research/ml/data/snapshot.csv --replay research/ml/data/discovery-replay.csv
 ```
 
-Optional fresh input is produced by the read-only export script and passed through `--confirmation-snapshot` and `--confirmation-replay`. Data files stay ignored; reports retain input hashes and the full attempted-trade ledger.
+To reproduce the committed confirmation, fetch its frozen data-only [release](https://github.com/creditcomebackclub/multi-chain-token-scanner/releases/tag/research-discovery-confirmation-2026-10-08). The fetch command verifies snapshot, decompressed paths, metadata, and exact exporter source against `confirmation-artifact.json`; the replay is regenerable from snapshot and paths. Data files stay ignored; reports retain input hashes and the full attempted-trade ledger.
+
+```sh
+npm run research:fetch-confirmation
+node --import tsx scripts/replay-strategy-discovery.mjs research/ml/data/strategy-discovery-v1/snapshot.csv research/ml/data/strategy-discovery-v1/paths.csv.gz research/ml/data/strategy-discovery-v1/replay.csv
+PYTHONPATH=research/ml research/ml/.venv/bin/python -m scanner_ml.strategy_discovery --snapshot research/ml/data/snapshot.csv --replay research/ml/data/discovery-replay.csv --confirmation-snapshot research/ml/data/strategy-discovery-v1/snapshot.csv --confirmation-replay research/ml/data/strategy-discovery-v1/replay.csv
+```
 
 For a private Railway connection, `node scripts/export-strategy-discovery.mjs --railway --tunnel` opens a temporary SSH tunnel, exports in a read-only transaction, suppresses credential output, and closes the tunnel. Replay the exported `research/ml/data/strategy-discovery-v1/snapshot.csv` and `paths.csv.gz` into `replay.csv`, then pass those snapshot/replay paths as confirmation arguments. The frozen cutoff remains October 8 at 00:00 UTC; later observations cannot enter this retrospective test.
 """
