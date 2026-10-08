@@ -350,6 +350,8 @@ def run_study(snapshot: Path, replay: Path, out: Path, confirmation_snapshot: Pa
         confirm_frames = {exit: fresh[f"{exit}:1"].loc[fresh[f"{exit}:1"].day.ge(DEVELOPMENT_END)].reset_index(drop=True) for exit in EXITS}
         confirm = confirmation_rows(development, confirm_frames)
     confirmation_summary = {name:summary(rows,samples) for name,rows in confirm.items()}
+    confirmation_baselines = {exit:summary(candidate_rows(frame,'baseline'),samples)
+                              for exit,frame in confirm_frames.items()}
     sensitivities = []
     for delay in [0,1]:
         frames = {exit:all_frames[f"{exit}:{delay}"].loc[all_frames[f"{exit}:{delay}"].day.lt(DEVELOPMENT_END)].reset_index(drop=True) for exit in EXITS}
@@ -368,6 +370,7 @@ def run_study(snapshot: Path, replay: Path, out: Path, confirmation_snapshot: Pa
         comparisons[name]=paired_difference(rows,matched,samples)
     frozen_summary = confirmation_summary.get(frozen) if frozen else None
     worth_testing = False
+    confirmation_checks = None
     if frozen_summary and frozen_summary['resolved']:
         frozen_rows=confirm[frozen];exit=frozen.split('|')[1]
         comparator=candidate_rows(confirm_frames[exit],'baseline')
@@ -377,10 +380,16 @@ def run_study(snapshot: Path, replay: Path, out: Path, confirmation_snapshot: Pa
         comparisons['frozen_confirmation']=difference
         worth_testing=bool(frozen_summary['expectancy']['estimate']>1 and difference['estimate']>0
                            and frozen_summary['mean_without_best']>0)
+        confirmation_checks={"mean_at_200bps":frozen_summary['expectancy']['estimate'],
+                             "mean_at_300bps":frozen_summary['expectancy']['estimate']-1,
+                             "matched_baseline_difference":difference,
+                             "mean_without_best":frozen_summary['mean_without_best'],
+                             "registered_criterion_met":worth_testing}
     result = {"registration":"fomo-strategy-discovery-v1","metadata":metadata,"confirmation_metadata":confirmation_metadata,
               "candidate_count":len(CANDIDATES),"development":summaries,"baselines":{exit:summary(rows,samples) for exit,rows in baseline.items()},
               "nested":summary(selected,samples),"choices":choices,"frozen_candidate":frozen,
-              "confirmation":confirmation_summary,"comparisons":comparisons,"sensitivity":sensitivities,"permutation":null,
+              "confirmation":confirmation_summary,"confirmation_baselines":confirmation_baselines,
+              "frozen_confirmation_checks":confirmation_checks,"comparisons":comparisons,"sensitivity":sensitivities,"permutation":null,
               "worth_prospective_testing":worth_testing,"live_promotable":False}
     out.mkdir(parents=True,exist_ok=True)
     pieces=[]
@@ -405,13 +414,21 @@ def run_study(snapshot: Path, replay: Path, out: Path, confirmation_snapshot: Pa
     comparison_rows=['| Candidate | Difference vs matched baseline | 95% day CI |', '|---|---:|---|']
     for name, interval in comparisons.items():
         comparison_rows.append(f"| {name.replace('|', ' / ')} | {fmt(interval['estimate'],'pp')} | {ci_text(interval)} |")
+    verdict='yes' if worth_testing else ('no; registered confirmation criterion not met' if confirmation_metadata
+                                        else 'not assessed; confirmation unavailable')
+    confirmation_line=''
+    if confirmation_checks:
+        confirmation_line=(f"Frozen candidate at 200bps: **{fmt(confirmation_checks['mean_at_200bps'],'%')}**; "
+                           f"at 300bps: **{fmt(confirmation_checks['mean_at_300bps'],'%')}**; "
+                           f"without its best winner at 200bps: **{fmt(confirmation_checks['mean_without_best'],'%')}**. "
+                           f"The registered confirmation criterion is **{'met' if worth_testing else 'not met'}**.")
     report=f"""# Focused FOMO strategy discovery v1
 
 **Retrospective research; modeled fills and costs. No validated BUY strategy or live change.**
 
 ## Decision
 
-Frozen development candidate: **{frozen or 'none; cash'}**. Worth prospective testing under the registered confirmation criterion: **{'yes' if worth_testing else 'no / confirmation unavailable'}**. Twelve prespecified candidates were tested; none can be promoted without the separately required fresh execution and forward evidence.
+Frozen development candidate: **{frozen or 'none; cash'}**. Worth prospective testing under the registered confirmation criterion: **{verdict}**. Twelve prespecified candidates were tested; none can be promoted without the separately required fresh execution and forward evidence.
 
 ## Development: reused published snapshot
 
@@ -446,6 +463,10 @@ Selected strategy: {selected_summary['resolved']} resolved trades, {fmt(selected
 ## Frozen retrospective confirmation
 
 {table(confirmation_summary) if confirmation_summary else 'Unavailable: the fresh read-only production export could not be obtained. No confirmation result is fabricated.'}
+
+{confirmation_line}
+
+{('### Same-period eligible-candle baselines' + chr(10) + chr(10) + table(confirmation_baselines)) if confirmation_baselines else ''}
 
 All rows above are prespecified diagnostics. The single selected candidate is frozen from development; confirmation outcomes cannot change it. October 3–7 observations predate registration, so even this confirmation is retrospective.
 
@@ -482,6 +503,8 @@ PYTHONPATH=research/ml research/ml/.venv/bin/python -m scanner_ml.strategy_disco
 ```
 
 Optional fresh input is produced by the read-only export script and passed through `--confirmation-snapshot` and `--confirmation-replay`. Data files stay ignored; reports retain input hashes and the full attempted-trade ledger.
+
+For a private Railway connection, `node scripts/export-strategy-discovery.mjs --railway --tunnel` opens a temporary SSH tunnel, exports in a read-only transaction, suppresses credential output, and closes the tunnel. Replay the exported `research/ml/data/strategy-discovery-v1/snapshot.csv` and `paths.csv.gz` into `replay.csv`, then pass those snapshot/replay paths as confirmation arguments. The frozen cutoff remains October 8 at 00:00 UTC; later observations cannot enter this retrospective test.
 """
     (out/'REPORT.md').write_text(report)
     return result

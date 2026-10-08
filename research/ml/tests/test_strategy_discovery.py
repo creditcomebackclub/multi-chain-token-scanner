@@ -145,3 +145,44 @@ def test_full_study_runs_on_synthetic_data_without_production_artifacts(tmp_path
     assert result['frozen_candidate']
     assert json.loads((tmp_path/'report/results.json').read_text())['live_promotable'] is False
     assert 'not estimable' in (tmp_path/'report/REPORT.md').read_text()
+
+
+def test_confirmation_cannot_replace_the_frozen_candidate_with_a_later_winner(tmp_path):
+    def write_inputs(frame, root, confirmation=False):
+        root.mkdir()
+        snapshot = root/'snapshot.csv'
+        frame.drop(columns=['entry_at', 'exit_at', 'fill_price', 'net_return_pct', 'gross_return_pct',
+                            'resolved', 'exit_reason']).to_csv(snapshot, index=False)
+        meta = {'exported_at': '2026-10-08T00:00:00Z',
+                'csv_sha256': hashlib.sha256(snapshot.read_bytes()).hexdigest()}
+        snapshot.with_name('snapshot.meta.json').write_text(json.dumps(meta))
+        blocks = []
+        for delay in [0, 1]:
+            for exit in EXITS:
+                block = frame[['id', 'entry_at', 'exit_at', 'net_return_pct', 'gross_return_pct', 'resolved', 'exit_reason']].copy()
+                if confirmation:
+                    block['net_return_pct'] = -3 if exit == 'trail' else 20
+                    block['gross_return_pct'] = block.net_return_pct+2
+                blocks.append(block.assign(exit=exit, delay_bars=delay, entry_price=100))
+        replay = root/'replay.csv'
+        pd.concat(blocks).to_csv(replay, index=False)
+        return snapshot, replay
+
+    development = observations().assign(volumeRatio=2, lowerWickPct=.3, upperWickPct=.2, closePosition=.8)
+    snapshot, replay = write_inputs(development, tmp_path/'dev')
+    fresh = observations(5).assign(volumeRatio=2, lowerWickPct=.3, upperWickPct=.2, closePosition=.8)
+    shift = 13*24*HOUR  # September 20 -> October 3.
+    for column in ['detected_at', 'entry_at', 'exit_at']:
+        fresh[column] += shift
+    confirmation_snapshot, confirmation_replay = write_inputs(fresh, tmp_path/'fresh', True)
+    result = run_study(snapshot, replay, tmp_path/'report', confirmation_snapshot,
+                       confirmation_replay, samples=50, permutations=2)
+    assert result['frozen_candidate'] == 'volume_ignition|trail'
+    assert result['confirmation']['volume_ignition|runner']['expectancy']['estimate'] == 20
+    assert result['frozen_confirmation_checks']['mean_at_200bps'] == -3
+    assert result['frozen_confirmation_checks']['mean_at_300bps'] == -4
+    assert result['worth_prospective_testing'] is False
+    assert result['live_promotable'] is False
+    report = (tmp_path/'report/REPORT.md').read_text()
+    assert 'registered confirmation criterion not met' in report
+    assert 'confirmation unavailable' not in report
