@@ -129,10 +129,13 @@ test('health warning suppression survives fresh provider updates', async () => {
     assert.equal((await s.healthAll())[0].warned, true); await s.health('goplus', 'healthy', 'recovered'); assert.equal((await s.healthAll())[0].warned, true);
   } finally { await s.db.close(); }
 });
-test('end-to-end replay ingests, enriches, checks security, confirms and records shadow without sending', async () => {
+test('end-to-end replay ingests, enriches, checks security, confirms and records shadow without sending', async t => {
   const s = await testStore();
   try {
     const c = config({ CHAINS: 'ethereum' }), now = Date.now();
+    // Keep fixture and worker windows at the same instant. Real I/O latency
+    // can otherwise evict one boundary buy and fail the confirmation assertion.
+    t.mock.method(Date, 'now', () => now);
     await s.ingest(trades(now)); await s.health('bitquery:ethereum', 'healthy', 'test', now);
     const previous = qualified(now - MINUTE); previous.confirmed = false; await s.save(previous);
     const dex = new DexScreener(new Http(0, async () => {
