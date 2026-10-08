@@ -4,7 +4,7 @@
 
 ## Decision
 
-Frozen development candidate: **volume_ignition|trail**. Worth prospective testing under the registered confirmation criterion: **no / confirmation unavailable**. Twelve prespecified candidates were tested; none can be promoted without the separately required fresh execution and forward evidence.
+Frozen development candidate: **volume_ignition|trail**. Worth prospective testing under the registered confirmation criterion: **no; registered confirmation criterion not met**. Twelve prespecified candidates were tested; none can be promoted without the separately required fresh execution and forward evidence.
 
 ## Development: reused published snapshot
 
@@ -53,6 +53,7 @@ Candidate returns minus the first eligible candle on its selected tokens/days, b
 | trend_pullback / trail | -0.53pp | [-2.20, 1.54] |
 | volume_ignition / trail | 2.20pp | [0.20, 3.87] |
 | return_ranked_ml / trail | NA | not estimable (0 days, 0 trades / degenerate) |
+| frozen_confirmation | -1.94pp | [-3.72, -0.26] |
 
 The published legacy signal/exit result remains a historical reference in [the original report](../REPORT.md). It has a different signal population and exit structure, so it is not a matched comparison for this new study.
 
@@ -97,7 +98,39 @@ Selected strategy: 4 resolved trades, 1.14% mean net return, 95% CI not estimabl
 
 ## Frozen retrospective confirmation
 
-Unavailable: the fresh read-only production export could not be obtained. No confirmation result is fabricated.
+| Candidate | Attempts / resolved | Days | Net mean | 95% day CI | Win rate | PF | $50-trade account P/L | Without best win | Coverage |
+|---|---:|---:|---:|---|---:|---:|---:|---:|---:|
+| support_reclaim / scalp | 9 / 8 | 3 | -0.41% | [-2.41, 0.92] | 25.00% | 0.71 | $-1.66 | -1.62% | 88.89% |
+| trend_pullback / scalp | 30 / 27 | 5 | -2.58% | [-4.07, -1.00] | 22.22% | 0.23 | $-34.82 | -2.99% | 90.00% |
+| volume_ignition / scalp | 32 / 29 | 5 | -1.40% | [-3.11, 0.30] | 20.69% | 0.41 | $-17.79 | -1.73% | 90.62% |
+| return_ranked_ml / scalp | 0 / 0 | 0 | NA | not estimable (0 days, 0 trades / degenerate) | NA | NA | $0.00 | NA | NA |
+| support_reclaim / runner | 9 / 6 | 3 | -0.49% | [-2.48, 0.92] | 50.00% | 0.80 | $-1.46 | -2.38% | 66.67% |
+| trend_pullback / runner | 30 / 24 | 5 | -3.01% | [-5.30, -0.65] | 16.67% | 0.30 | $-36.10 | -3.70% | 80.00% |
+| volume_ignition / runner | 32 / 23 | 5 | 0.59% | [-3.22, 2.95] | 47.83% | 1.26 | $8.35 | 0.03% | 71.88% |
+| return_ranked_ml / runner | 69 / 48 | 5 | -1.32% | [-2.61, -0.23] | 29.17% | 0.63 | $-20.84 | -1.63% | 69.57% |
+| support_reclaim / trail | 9 / 7 | 3 | 0.90% | [-0.73, 1.57] | 57.14% | 1.59 | $3.14 | -0.44% | 77.78% |
+| trend_pullback / trail | 30 / 26 | 5 | -2.95% | [-4.64, -1.10] | 11.54% | 0.23 | $-38.29 | -3.53% | 86.67% |
+| volume_ignition / trail | 32 / 23 | 5 | -0.45% | [-3.25, 1.68] | 39.13% | 0.80 | $0.80 | -0.90% | 71.88% |
+| return_ranked_ml / trail | 0 / 0 | 0 | NA | not estimable (0 days, 0 trades / degenerate) | NA | NA | $0.00 | NA | NA |
+
+Frozen candidate at 200bps: **-0.45%**; at 300bps: **-1.45%**; without its best winner at 200bps: **-0.90%**. The registered confirmation criterion is **not met**.
+
+### Frozen-candidate cost and delay diagnostics
+
+| Delay | 100bps | 200bps | 300bps |
+|---|---:|---:|---:|
+| 0m | 2.01% | 1.01% | 0.01% |
+| 5m | 0.55% | -0.45% | -1.45% |
+
+These retain the frozen strategy family and exits. Only the registered 5m / 200bps case determines the primary confirmation result; diagnostics cannot replace it.
+
+### Same-period eligible-candle baselines
+
+| Candidate | Attempts / resolved | Days | Net mean | 95% day CI | Win rate | PF | $50-trade account P/L | Without best win | Coverage |
+|---|---:|---:|---:|---|---:|---:|---:|---:|---:|
+| scalp | 295 / 250 | 5 | -1.58% | [-2.04, -1.12] | 26.40% | 0.50 | $-111.81 | -1.62% | 84.75% |
+| runner | 295 / 217 | 5 | -1.75% | [-2.70, -0.67] | 34.10% | 0.56 | $-61.93 | -1.82% | 73.56% |
+| trail | 295 / 235 | 5 | -1.62% | [-2.23, -0.97] | 28.51% | 0.51 | $-75.99 | -1.73% | 79.66% |
 
 All rows above are prespecified diagnostics. The single selected candidate is frozen from development; confirmation outcomes cannot change it. October 3–7 observations predate registration, so even this confirmation is retrospective.
 
@@ -158,4 +191,12 @@ node --import tsx scripts/replay-strategy-discovery.mjs research/ml/data/snapsho
 PYTHONPATH=research/ml research/ml/.venv/bin/python -m scanner_ml.strategy_discovery --snapshot research/ml/data/snapshot.csv --replay research/ml/data/discovery-replay.csv
 ```
 
-Optional fresh input is produced by the read-only export script and passed through `--confirmation-snapshot` and `--confirmation-replay`. Data files stay ignored; reports retain input hashes and the full attempted-trade ledger.
+To reproduce the committed confirmation, fetch its frozen data-only [release](https://github.com/creditcomebackclub/multi-chain-token-scanner/releases/tag/research-discovery-confirmation-2026-10-08). The fetch command verifies snapshot, decompressed paths, metadata, and exact exporter source against `confirmation-artifact.json`; the replay is regenerable from snapshot and paths. Data files stay ignored; reports retain input hashes and the full attempted-trade ledger.
+
+```sh
+npm run research:fetch-confirmation
+node --import tsx scripts/replay-strategy-discovery.mjs research/ml/data/strategy-discovery-v1/snapshot.csv research/ml/data/strategy-discovery-v1/paths.csv.gz research/ml/data/strategy-discovery-v1/replay.csv
+PYTHONPATH=research/ml research/ml/.venv/bin/python -m scanner_ml.strategy_discovery --snapshot research/ml/data/snapshot.csv --replay research/ml/data/discovery-replay.csv --confirmation-snapshot research/ml/data/strategy-discovery-v1/snapshot.csv --confirmation-replay research/ml/data/strategy-discovery-v1/replay.csv
+```
+
+For a private Railway connection, `node scripts/export-strategy-discovery.mjs --railway --tunnel` opens a temporary SSH tunnel, exports in a read-only transaction, suppresses credential output, and closes the tunnel. Replay the exported `research/ml/data/strategy-discovery-v1/snapshot.csv` and `paths.csv.gz` into `replay.csv`, then pass those snapshot/replay paths as confirmation arguments. The frozen cutoff remains October 8 at 00:00 UTC; later observations cannot enter this retrospective test.
