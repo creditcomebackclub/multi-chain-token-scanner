@@ -328,7 +328,8 @@ def table(summaries: dict[str, dict]) -> str:
     rows = ["| Candidate | Attempts / resolved | Days | Net mean | 95% day CI | Win rate | PF | $50-trade account P/L | Without best win | Coverage |",
             "|---|---:|---:|---:|---|---:|---:|---:|---:|---:|"]
     for name, item in summaries.items():
-        rows.append(f"| {name} | {item['attempts']} / {item['resolved']} | {item['days']} | {fmt(item['expectancy']['estimate'],'%')} | {ci_text(item['expectancy'])} | {fmt(item['win_rate']*100,'%')} | {fmt(item['profit_factor'])} | ${item['portfolio']['pnl']:.2f} | {fmt(item['mean_without_best'],'%')} | {fmt(item['coverage']*100,'%')} |")
+        label = name.replace('|', ' / ')
+        rows.append(f"| {label} | {item['attempts']} / {item['resolved']} | {item['days']} | {fmt(item['expectancy']['estimate'],'%')} | {ci_text(item['expectancy'])} | {fmt(item['win_rate']*100,'%')} | {fmt(item['profit_factor'])} | ${item['portfolio']['pnl']:.2f} | {fmt(item['mean_without_best'],'%')} | {fmt(item['coverage']*100,'%')} |")
     return "\n".join(rows)
 
 
@@ -399,11 +400,11 @@ def run_study(snapshot: Path, replay: Path, out: Path, confirmation_snapshot: Pa
     for name in CANDIDATES:
         for delay in [0,5]:
             values=[next(item['mean'] for item in sensitivities if item['candidate']==name and item['delay_minutes']==delay and item['cost_bps']==cost) for cost in [100,200,300]]
-            sensitivity_rows.append(f"| {name} | {delay}m | "+' | '.join(fmt(value,'%') for value in values)+' |')
+            sensitivity_rows.append(f"| {name.replace('|', ' / ')} | {delay}m | "+' | '.join(fmt(value,'%') for value in values)+' |')
     selected_summary=result['nested']
     comparison_rows=['| Candidate | Difference vs matched baseline | 95% day CI |', '|---|---:|---|']
     for name, interval in comparisons.items():
-        comparison_rows.append(f"| {name} | {fmt(interval['estimate'],'pp')} | {ci_text(interval)} |")
+        comparison_rows.append(f"| {name.replace('|', ' / ')} | {fmt(interval['estimate'],'pp')} | {ci_text(interval)} |")
     report=f"""# Focused FOMO strategy discovery v1
 
 **Retrospective research; modeled fills and costs. No validated BUY strategy or live change.**
@@ -436,7 +437,9 @@ The published legacy signal/exit result remains a historical reference in [the o
 
 Past-only selection takes a candidate only after >=10 selected training trades over >=3 days and a positive training mean. Model scores are generated with prior-day, purged/group-separated fits, not in-sample fits. Unavailable or negative selection stays in cash.
 
+```json
 {json.dumps(choices,indent=2)}
+```
 
 Selected strategy: {selected_summary['resolved']} resolved trades, {fmt(selected_summary['expectancy']['estimate'],'%')} mean net return, 95% CI {ci_text(selected_summary['expectancy'])}; illustrative constrained account P/L ${selected_summary['portfolio']['pnl']:.2f}.
 
@@ -462,9 +465,14 @@ The ML model is fitted anew under each predeclared sensitivity's training labels
 - Missing entries and gaps never get invented fills. An unfinished path is unresolved; resolved-return means can still suffer informative censoring. Per-candidate −100% missing-path stress means and coverage are in results.json.
 - The $1,000 illustration uses $50 positions and max three simultaneous fills, with cash reservation before the outcome; reported drawdown uses realized equity, not unavailable intratrade mark-to-market. Unknown P/L is marked at zero only in this illustration and is separately stressed as a total loss.
 - Modeled costs do not replace FOMO quotes, sellability/security checks, or actual fills. A 3% price stop does not limit rug losses to 3%.
+- The inherited trailing simulator has only OHLC bars, so activation-bar target/trail ordering is assumed rather than observed. A lead that depends on these fills needs transaction-level execution evidence.
 - The historical sample contains only a handful of market days and repeated pools. No count of candle rows substitutes for independent days.
 - Phase 4 regime, young-pool, order-flow, wallet-following, and actual-cost hypotheses remain under their existing coverage gates.
 - A future candidate requires >=100 resolved trades over >=20 new UTC days, >=95% outcome coverage, positive lower expectancy and matched-baseline bounds, and executable cost/security evidence. No alerts, collectors, or the locked Phase 3 challenger change automatically.
+
+## Research rationale
+
+Trend persistence is a plausible hypothesis, but [the original time-series momentum research](https://www.aqr.com/insights/research/journal-article/time-series-momentum) does not validate five-minute memecoin trades. Searching for a historical winner can itself create misleading results; [Bailey et al.'s backtest-overfitting paper](https://www.davidhbailey.com/dhbpapers/backtest-prob.pdf) motivates keeping this short reused-sample search separate from new forward evidence. The calculations above, rather than those papers, determine this study's verdict.
 
 ## Reproduce
 
