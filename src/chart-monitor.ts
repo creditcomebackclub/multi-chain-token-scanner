@@ -6,44 +6,57 @@ import { CHAINS, HOUR } from './config.js';
 import { escapeHtml, type Telegram } from './telegram.js';
 
 export interface AlertOutcome {
-  startedAt: number; lastAt: number; entry: number; stop: number; tp1: number; tp2: number;
+  startedAt: number; lastAt: number; entry: number; stop: number; tp1: number; tp2: number|null;
   minPrice: number; maxPrice: number; firstHit: 'stop' | 'tp1' | null;
   stopAt: number | null; tp1At: number | null; tp2At: number | null; complete: boolean;
 }
 export interface ManagedPosition {
   id: string; alertId: string; chain: Chain; token: string; pool: string; symbol: string;
-  amountUsd: number; entry: number; stop: number; tp1: number; tp2: number;
+  amountUsd: number; entry: number; stop: number; tp1: number; tp2: number|null;
+  planVersion?:string; trailPct?:number; highWaterPrice?:number; trailStop?:number;
   initialLiquidity: number; openedAt: number; stage: 'open' | 'tp1'; status: 'open' | 'closed';
 }
-export type PositionEvent = 'liquidity' | 'stop' | 'tp1' | 'tp2' | 'breakeven';
+export type PositionEvent = 'liquidity' | 'stop' | 'tp1' | 'tp2' | 'breakeven' | 'trail';
 
-export function advanceOutcome(old: AlertOutcome | undefined, levels: {entry:number;stop:number;tp1:number;tp2:number}, price: number, at: number): AlertOutcome {
-  if (![price,at,levels.entry,levels.stop,levels.tp1,levels.tp2].every(Number.isFinite) || price <= 0 || levels.stop >= levels.entry || levels.tp1 <= levels.entry || levels.tp2 <= levels.tp1) throw new Error('Invalid chart outcome sample');
+export function advanceOutcome(old: AlertOutcome | undefined, levels: {entry:number;stop:number;tp1:number;tp2:number|null}, price: number, at: number): AlertOutcome {
+  if (![price,at,levels.entry,levels.stop,levels.tp1].every(Number.isFinite) || price <= 0 || levels.stop >= levels.entry || levels.tp1 <= levels.entry || (levels.tp2!==null&&(!Number.isFinite(levels.tp2)||levels.tp2<=levels.tp1))) throw new Error('Invalid chart outcome sample');
   const out: AlertOutcome = old ? structuredClone(old) : { startedAt: at, lastAt: at, ...levels, minPrice: levels.entry, maxPrice: levels.entry, firstHit: null, stopAt: null, tp1At: null, tp2At: null, complete: false };
   out.lastAt = Math.max(out.lastAt, at); out.minPrice = Math.min(out.minPrice, price); out.maxPrice = Math.max(out.maxPrice, price);
   if (!out.firstHit && price <= out.stop) { out.firstHit = 'stop'; out.stopAt = at; }
   if (!out.firstHit && price >= out.tp1) { out.firstHit = 'tp1'; out.tp1At = at; }
   if (!out.tp1At && price >= out.tp1) out.tp1At = at;
-  if (!out.tp2At && price >= out.tp2) out.tp2At = at;
+  if (out.tp2!==null&&!out.tp2At && price >= out.tp2) out.tp2At = at;
   out.complete = at - out.startedAt >= 24 * HOUR;
   return out;
 }
 
+export function advancePositionTrail(position:ManagedPosition,price:number):ManagedPosition{
+  if(position.status!=='open'||position.stage!=='tp1'||position.trailPct===undefined)return position;
+  if(!Number.isFinite(price)||price<=0||!Number.isFinite(position.trailPct)||position.trailPct<=0||position.trailPct>=100)throw new Error('Invalid trailing position sample');
+  const highWaterPrice=Math.max(position.highWaterPrice??position.tp1,position.tp1,price);
+  const trailStop=Math.max(position.entry,position.trailStop??position.entry,highWaterPrice*(1-position.trailPct/100));
+  return {...position,highWaterPrice,trailStop};
+}
+
 export function positionEvent(position: ManagedPosition, market: Pick<Market,'price'|'liquidity'>): PositionEvent | null {
   if (position.stage === 'open' && market.price <= position.stop) return 'stop';
-  if (market.price >= position.tp2) return 'tp2';
+  if (position.tp2!==null&&market.price >= position.tp2) return 'tp2';
   if (position.stage === 'open' && market.price >= position.tp1) return 'tp1';
-  if (position.stage === 'tp1' && market.price <= position.entry) return 'breakeven';
+  if(position.stage==='tp1'&&position.trailPct!==undefined){
+    if(market.price<=advancePositionTrail(position,market.price).trailStop!)return 'trail';
+  }else if (position.stage === 'tp1' && market.price <= position.entry) return 'breakeven';
   if (market.liquidity < Math.max(10_000, position.initialLiquidity * .5)) return 'liquidity';
   return null;
 }
 const money = (n:number) => `$${n.toPrecision(5)}`;
 export function renderPositionEvent(p: ManagedPosition, event: PositionEvent, market: Pick<Market,'price'|'liquidity'>): string {
   const gain = (market.price / p.entry - 1) * 100;
-  const action = event === 'tp1' ? '<b>TP1 HIT — SELL 50% NOW</b>\nThen move the stop on the remainder to your actual entry.'
+  const runner=event==='tp1'&&p.trailPct!==undefined?advancePositionTrail({...p,stage:'tp1'},market.price):p;
+  const action = event === 'tp1' ? `<b>TP1 HIT — SELL 50% NOW</b>\n${p.trailPct===undefined?'Then move the stop on the remainder to your actual entry.':`Then trail the remaining 50% ${p.trailPct}% below its highest observed price. Current trailing level: ${money(runner.trailStop!)}. The trail only tightens.`}`
     : event === 'tp2' ? p.stage==='open'?'<b>TP2 REACHED — TAKE PROFIT NOW</b>\nThe one-minute sample skipped past TP1; manage the full position now.':'<b>TP2 HIT — SELL THE REMAINDER</b>'
     : event === 'stop' ? '<b>STOP HIT — EXIT THE POSITION</b>'
     : event === 'breakeven' ? '<b>BREAKEVEN STOP HIT — EXIT THE REMAINDER</b>'
+    : event === 'trail' ? `<b>TRAILING STOP HIT — EXIT THE REMAINDER</b>\nTrailing level: ${money(p.trailStop!)} · ${p.trailPct}% below the highest observed price (${money(p.highWaterPrice!)}).`
     : '<b>LIQUIDITY WARNING — CHECK SELLABILITY NOW</b>\nExact-pool liquidity fell by at least 50% or below $10K.';
   return `⚡ ${action}\n\n${escapeHtml(p.symbol)} · ${CHAINS[p.chain].name}\nCurrent observed price: ${money(market.price)} (${gain >= 0 ? '+' : ''}${gain.toFixed(1)}% from your entered price)\nObserved liquidity: $${Math.round(market.liquidity).toLocaleString('en-US')}\n\n<code>${escapeHtml(p.token)}</code>\n\nThis is a monitoring alert from DEX Screener spot samples. It cannot sell for you; verify the live FOMO quote and slippage before acting.`;
 }
@@ -82,9 +95,14 @@ export class ChartMonitor {
           await this.store.recordChartSignalSample(signal.id,now,market.price,market.liquidity,outcome);sampled++;
         }catch{missing++;}
       }
-      for (const position of positions.filter(p=>p.chain===chain)) {
-        const market=markets.get(position.token)?.find(m=>m.pool===position.pool);
+      for (const savedPosition of positions.filter(p=>p.chain===chain)) {
+        const market=markets.get(savedPosition.token)?.find(m=>m.pool===savedPosition.pool);
         if (!market) { missing++; continue; }
+        let position=savedPosition;
+        if(position.trailPct!==undefined){
+          try{const current=await this.store.trackChartPositionTrail(position.id,market.price);if(!current)continue;position=current;}
+          catch{missing++;continue;}
+        }
         const event=positionEvent(position,market); if (!event || !this.telegram) continue;
         if (!await this.store.reserveChartPositionEvent(position,event,{price:market.price,liquidity:market.liquidity,at:now},this.telegram.chatKey)) continue;
         try { const message=await this.telegram.send(renderPositionEvent(position,event,market)); await this.store.finishChartPositionEvent(position.id,event,'sent',message); notices++; }

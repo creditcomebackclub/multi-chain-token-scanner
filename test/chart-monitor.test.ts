@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { advanceOutcome, ChartMonitor, positionEvent, type ManagedPosition } from '../src/chart-monitor.js';
+import { advanceOutcome, advancePositionTrail, renderPositionEvent, ChartMonitor, positionEvent, type ManagedPosition } from '../src/chart-monitor.js';
+import { Store } from '../src/store.js';
 import { HOUR } from '../src/config.js';
 import { config } from '../src/config.js';
 import type { DexScreener } from '../src/providers/enrichment.js';
@@ -29,6 +30,88 @@ test('position management prioritizes an actionable price level and then liquidi
   assert.equal(positionEvent(position(),{price:1.06,liquidity:1_000}),'tp1');
   assert.equal(positionEvent(position('tp1'),{price:1,liquidity:100_000}),'breakeven');
   assert.equal(positionEvent(position(),{price:1,liquidity:49_999}),'liquidity');
+});
+
+test('owner targets do not fire at scalp levels and the nullable runner never becomes a zero-price TP2',()=>{
+  const ownerLevels={entry:1,stop:.92,tp1:2,tp2:null};
+  let out=advanceOutcome(undefined,ownerLevels,1,1_000);
+  out=advanceOutcome(out,ownerLevels,1.10,2_000);assert.equal(out.firstHit,null);assert.equal(out.tp2At,null);
+  out=advanceOutcome(out,ownerLevels,2,3_000);assert.equal(out.firstHit,'tp1');assert.equal(out.tp2At,null);
+  const p={...position(),tp1:2,tp2:null,trailPct:20};
+  assert.equal(positionEvent(p,{price:1.10,liquidity:100_000}),null);
+  assert.equal(positionEvent(p,{price:2.50,liquidity:100_000}),'tp1','a jump above double entry still sells half, not all');
+  const active=advancePositionTrail({...p,stage:'tp1'},2.50);assert.equal(active.highWaterPrice,2.50);assert.equal(active.trailStop,2);
+  const lower=advancePositionTrail(active,2.10);assert.equal(lower.highWaterPrice,2.50);assert.equal(lower.trailStop,2);
+  assert.equal(positionEvent(lower,{price:2,liquidity:100_000}),'trail');
+  assert.match(renderPositionEvent(p,'tp1',{price:2,liquidity:100_000}),/20% below/);
+  assert.match(renderPositionEvent(active,'trail',{price:2,liquidity:100_000}),/TRAILING STOP HIT/);
+});
+
+test('owner trail persists its peak across restart, closes once, and uses actual fill prices',async()=>{
+  const store=await testStore();
+  try{
+    const ownerPlan={...plan,version:'owner-double-trail20-v1',takeProfit:2,runnerTarget:null,runnerTrailPct:20};
+    await store.db.query("INSERT INTO chart_setup_alerts(id,chain,token,pool,data,status,sent_at) VALUES('owner','ethereum',$1,$1,$2,'sent',clock_timestamp())",[TOKEN,JSON.stringify({pair,plan:ownerPlan})]);
+    const p=await store.registerChartPosition(TOKEN,50,1.01);assert.equal(p.tp1,2.02);assert.equal(p.tp2,null);assert.equal(p.trailPct,20);
+    await store.validateChat('chat');
+    assert.equal(await store.reserveChartPositionEvent(p,'tp1',{price:2.10,liquidity:100_000},'chat'),true);
+    assert.equal(await store.reserveChartPositionEvent(p,'tp1',{price:2.20,liquidity:100_000},'chat'),false);
+    let active=(await store.openChartPositions())[0];assert.equal(active.stage,'tp1');assert.equal(active.highWaterPrice,2.10);assert.ok(Math.abs(active.trailStop!-1.68)<1e-12);
+    active=(await store.trackChartPositionTrail(p.id,3))!;assert.ok(Math.abs(active.trailStop!-2.4)<1e-12);
+    const restarted=new Store(store.db);
+    active=(await restarted.trackChartPositionTrail(p.id,2.50))!;assert.equal(active.highWaterPrice,3);assert.ok(Math.abs(active.trailStop!-2.4)<1e-12);
+    assert.equal(positionEvent(active,{price:2.50,liquidity:100_000}),null);
+    assert.equal(await restarted.reserveChartPositionEvent(active,'trail',{price:2.39,liquidity:100_000},'chat'),true);
+    assert.equal(await restarted.reserveChartPositionEvent(active,'trail',{price:2.30,liquidity:100_000},'chat'),false);
+    assert.equal((await restarted.openChartPositions()).length,0);
+    assert.equal(Number((await store.db.query("SELECT count(*)::int n FROM chart_position_events WHERE kind='trail'")).rows[0].n),1);
+    assert.equal((await store.chartStats()).used24h,1,'position events do not use another BUY slot');
+  }finally{await store.db.close()}
+});
+
+test('Telegram monitoring delivers owner TP1 and trailing exit once across restart',async()=>{
+  const store=await testStore(),sent:any[]=[];
+  try{
+    const ownerPlan={...plan,version:'owner-double-trail20-v1',takeProfit:2,runnerTarget:null,runnerTrailPct:20};
+    await store.db.query("INSERT INTO chart_setup_alerts(id,chain,token,pool,data,status,sent_at) VALUES('owner','ethereum',$1,$1,$2,'sent',clock_timestamp())",[TOKEN,JSON.stringify({pair,plan:ownerPlan})]);
+    const c=config({SCAN_MODE:'shortlist',TELEGRAM_CHAT_ID:'123',TELEGRAM_BOT_TOKEN:'fake'});
+    const bot=new Telegram(c,store,new Http(0,async(_url,init)=>{sent.push(JSON.parse(String(init?.body)));return Response.json({ok:true,result:{message_id:sent.length}})}));
+    await store.validateChat(bot.chatKey);
+    await bot.handle({message:{chat:{id:123,type:'private'},text:`/entered ${TOKEN} 50 1`}});
+    assert.match(sent[0].text,/TP1 \$2\.0000 \(\+100%\)/);assert.match(sent[0].text,/20% trailing runner/);assert.ok(!sent[0].text.includes('TP2'));
+    let price=1.10;
+    const dex={batch:async()=>new Map([[TOKEN,[{pool:TOKEN,price,liquidity:100_000}]]])} as unknown as DexScreener;
+    const monitor=new ChartMonitor(store,dex,bot);
+    await monitor.tick();assert.equal(sent.length,1);
+    price=2;await monitor.tick();assert.equal(sent.length,2);assert.match(sent[1].text,/TP1 HIT/);assert.match(sent[1].text,/20% below/);
+    price=3;await monitor.tick();assert.equal(sent.length,2);
+    const restarted=new Store(store.db);
+    price=2.39;await new ChartMonitor(restarted,dex,bot).tick();
+    assert.equal(sent.length,3);assert.match(sent[2].text,/TRAILING STOP HIT/);
+    await new ChartMonitor(restarted,dex,bot).tick();assert.equal(sent.length,3);
+    assert.equal((await store.openChartPositions()).length,0);
+    assert.equal((await store.chartStats()).used24h,1);
+  }finally{await store.db.close()}
+});
+
+test('statistics keep +5% and +100% observed targets in separate stored-plan cohorts',async()=>{
+  const store=await testStore(),sent:any[]=[];
+  try{
+    for(const [id,p] of [['legacy',{...plan,version:'super-scalp-entry-v3'}],['owner',{...plan,version:'owner-double-trail20-v1',takeProfit:2,runnerTarget:null,runnerTrailPct:20}]] as const){
+      await store.db.query("INSERT INTO chart_setup_alerts(id,chain,token,pool,data,status,sent_at) VALUES($1,'ethereum',$2,$2,$3,'sent',clock_timestamp())",[id,TOKEN,JSON.stringify({pair,plan:p})]);
+      const out=advanceOutcome(undefined,{entry:1,stop:.92,tp1:p.takeProfit,tp2:p.runnerTarget},1.06,Date.now());
+      await store.recordChartAlertSample(id,Date.now(),1.06,100_000,out);
+    }
+    const stats=await store.chartStats();
+    assert.equal(stats.plans.find(p=>p.version==='super-scalp-entry-v3')?.tp1First,1);
+    assert.equal(stats.plans.find(p=>p.version==='owner-double-trail20-v1')?.tp1First,0);
+    const c=config({SCAN_MODE:'shortlist',TELEGRAM_CHAT_ID:'123',TELEGRAM_BOT_TOKEN:'fake'});
+    const bot=new Telegram(c,store,new Http(0,async(_url,init)=>{sent.push(JSON.parse(String(init?.body)));return Response.json({ok:true,result:{message_id:sent.length}})}));
+    await store.validateChat(bot.chatKey);await bot.handle({message:{chat:{id:123,type:'private'},text:'/stats'}});
+    assert.match(sent[0].text,/super-scalp-entry-v3 · TP1 \+5%/);assert.match(sent[0].text,/owner-double-trail20-v1 · TP1 \+100% \/ 20% trail/);
+    await bot.handle({message:{chat:{id:123,type:'private'},text:'/lastbuy'}});
+    assert.match(sent[1].text,/20% trailing runner after TP1/);assert.ok(!sent[1].text.includes('TP2:'));
+  }finally{await store.db.close()}
 });
 
 test('delivered chart alerts are sampled and actual entries can arm deduplicated management',async()=>{

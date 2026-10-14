@@ -4,7 +4,7 @@ import { BAR, CHART_RULE, type Candle, type ResearchFeatures, type Setup } from 
 import { evaluateResearch, type ResearchOutcome } from './chart-research.js';
 import { analyzeChartLearning, type LearningRow } from './chart-learning.js';
 import { forwardShadowVariants, shadowMaturityCutoff, simulateForwardShadow, summarizeForwardShadow, type ShadowOutcome } from './shadow-research.js';
-import type { AlertOutcome, ManagedPosition, PositionEvent } from './chart-monitor.js';
+import { advancePositionTrail, positionEvent, type AlertOutcome, type ManagedPosition, type PositionEvent } from './chart-monitor.js';
 import pg from 'pg';
 import { randomUUID } from 'node:crypto';
 import { DAY, HOUR, MAX_ALERTS_PER_24H, MAX_SCOUT_ALERTS_PER_24H, MINUTE, RULE_ID, rules, type Chain, type Config } from './config.js';
@@ -37,6 +37,16 @@ const usage = (table:string) => `SELECT chain,token FROM ${table}
   WHERE reserved_at > clock_timestamp()-interval '24 hours' OR sent_at > clock_timestamp()-interval '24 hours' OR status IN ('reserved','sending')`;
 export const candidateUsage = usage('alerts');
 const chartUsage=usage('chart_setup_alerts'), shortlistUsage=usage('shortlist_alerts');
+function chartPlanOutcomes(rows:{plan:any;data?:AlertOutcome|null}[]){
+  const groups=new Map<string,{version:string;tp1Pct:number|null;trailPct:number|null;measured:number;tp1First:number;stopFirst:number;open:number}>();
+  for(const row of rows){
+    const version=String(row.plan?.version??'legacy'),ratio=Number(row.plan?.takeProfit)/Number(row.plan?.referenceEntry);
+    const group=groups.get(version)??{version,tp1Pct:Number.isFinite(ratio)?Math.round((ratio-1)*100):null,trailPct:row.plan?.runnerTrailPct??null,measured:0,tp1First:0,stopFirst:0,open:0};
+    if(row.data){group.measured++;if(row.data.firstHit==='tp1')group.tp1First++;else if(row.data.firstHit==='stop')group.stopFirst++;else group.open++;}
+    groups.set(version,group);
+  }
+  return [...groups.values()];
+}
 export class Store {
   private storageBudget={checkedAt:-Infinity,allowed:true};
   private storageBudgetCheck?:Promise<boolean>;
@@ -169,7 +179,7 @@ export class Store {
         FROM jsonb_array_elements($4::jsonb) x ON CONFLICT DO NOTHING`,[pair.chain,pair.token,pair.pool,JSON.stringify(bars)]);
       const data={pair,features,setup:setup??null,plan:setup?chartTradePlan(setup):null,signalId:signalId??null};
       await q.query(`INSERT INTO chart_research_observations(id,rule,chain,token,pool,at,kind,data) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
-        ON CONFLICT(id) DO UPDATE SET data=chart_research_observations.data||excluded.data,kind=excluded.kind,updated_at=clock_timestamp()`,
+        ON CONFLICT(id) DO UPDATE SET data=chart_research_observations.data||excluded.data||jsonb_build_object('plan',chart_research_observations.data->'plan'),kind=excluded.kind,updated_at=clock_timestamp()`,
         [id,CHART_RULE,pair.chain,pair.token,pair.pool,date(features.at),setup?'signal':'control',JSON.stringify(data)]);
     });
     // Shadow enrollment is repairable and must never make the live chart path fail.
@@ -370,14 +380,16 @@ export class Store {
     await this.db.query("UPDATE chart_setup_alerts SET status=$2,message_id=$3,sent_at=CASE WHEN $2 IN ('sent','unknown') THEN clock_timestamp() ELSE NULL END WHERE id=$1",[id,status,messageId ?? null]);
   }
   async chartStats() {
-    const outcomeRows=(await this.db.query(`SELECT o.data FROM chart_alert_outcomes o JOIN chart_setup_alerts a ON a.id=o.alert_id
-      WHERE a.status='sent' AND a.sent_at>clock_timestamp()-interval '7 days'`)).rows.map(row=>row.data as AlertOutcome);
+    const rows=(await this.db.query(`SELECT o.data,a.data->'plan' AS plan FROM chart_setup_alerts a LEFT JOIN chart_alert_outcomes o ON o.alert_id=a.id
+      WHERE a.status='sent' AND a.sent_at>clock_timestamp()-interval '7 days'`)).rows;
+    const outcomeRows=rows.map(row=>row.data as AlertOutcome|undefined).filter((o):o is AlertOutcome=>!!o);
     return {
       used24h: (await this.db.query(chartUsage)).rows.length,
       sent7d: Number((await this.db.query("SELECT count(*)::int AS n FROM chart_setup_alerts WHERE status='sent' AND sent_at>clock_timestamp()-interval '7 days'")).rows[0].n),
       measured: outcomeRows.length, tp1First: outcomeRows.filter(o=>o.firstHit==='tp1').length,
       stopFirst: outcomeRows.filter(o=>o.firstHit==='stop').length, tp2: outcomeRows.filter(o=>o.tp2At!==null).length,
       open: outcomeRows.filter(o=>o.firstHit===null).length,
+      plans:chartPlanOutcomes(rows),
     };
   }
   async latestChartAlert() {
@@ -436,6 +448,7 @@ export class Store {
     const evidence=rows.map(row=>row.signal_data?.evidence?.security).filter(Boolean),reasons:Record<string,number>={};
     for(const item of evidence)for(const reason of item.reasons??[])reasons[reason]=(reasons[reason]??0)+1;
     return { detected:rows.length,measured:outcomes.length,tp1First:outcomes.filter(o=>o.firstHit==='tp1').length,
+      plans:chartPlanOutcomes(rows.map(row=>({plan:row.signal_data?.plan,data:row.data}))),
       stopFirst:outcomes.filter(o=>o.firstHit==='stop').length,open:outcomes.filter(o=>o.firstHit===null).length,
       decisions:Object.fromEntries([...new Set(rows.map(row=>row.decision))].sort().map(decision=>[decision,rows.filter(row=>row.decision===decision).length])),
       security:{evidence:evidence.length,missing:rows.length-evidence.length,statuses:Object.fromEntries(['PASS','REJECT','UNKNOWN'].map(status=>[status,evidence.filter(item=>item.status===status).length])),reasons:Object.fromEntries(Object.entries(reasons).sort((a,b)=>b[1]-a[1]))} };
@@ -447,7 +460,7 @@ export class Store {
       FROM chart_signals s LEFT JOIN chart_signal_outcomes o ON o.signal_id=s.id
       LEFT JOIN chart_candles sc ON sc.chain=s.chain AND sc.pool=s.pool AND sc.at=s.detected_at-interval '5 minutes'
       LEFT JOIN chart_candles nc ON nc.chain=s.chain AND nc.pool=s.pool AND nc.at=s.detected_at
-      WHERE s.detected_at>clock_timestamp()-interval '7 days' ORDER BY s.detected_at DESC`)).rows;
+      WHERE s.detected_at>clock_timestamp()-interval '7 days' AND s.data->'plan'->>'runnerTrailPct' IS NULL ORDER BY s.detected_at DESC`)).rows;
     const candleRows=(await this.db.query(`SELECT chain,pool,extract(epoch FROM at)*1000 AS at,open,high,low,close,volume
       FROM chart_candles WHERE at>clock_timestamp()-interval '8 days' ORDER BY at`)).rows;
     const histories=new Map<string,Candle[]>();
@@ -481,7 +494,12 @@ export class Store {
       const plan=alert.data?.plan, pair=alert.data?.pair;
       if (![plan?.stop,plan?.entryMin,plan?.entryMax,pair?.liquidity].every((n:unknown)=>typeof n==='number'&&Number.isFinite(n))) throw new Error('The matching alert does not contain a usable trade plan.');
       if (entry<plan.entryMin || entry>plan.entryMax) throw new Error(`That price is outside the alert entry range ${plan.entryMin}–${plan.entryMax}.`);
-      const position:ManagedPosition={id:randomUUID(),alertId:alert.id,chain:alert.chain,token:alert.token,pool:alert.pool,symbol:String(pair.symbol||'?').slice(0,30),amountUsd,entry,stop:plan.stop,tp1:entry*1.05,tp2:entry*1.10,initialLiquidity:pair.liquidity,openedAt:Date.now(),stage:'open',status:'open'};
+      if(![plan.referenceEntry,plan.takeProfit].every((n:unknown)=>typeof n==='number'&&Number.isFinite(n))||plan.referenceEntry<=0||plan.takeProfit<=plan.referenceEntry||plan.stop>=entry)throw new Error('The matching alert contains invalid profit levels.');
+      const trailing=plan.runnerTarget===null;
+      if(trailing?!(Number.isFinite(plan.runnerTrailPct)&&plan.runnerTrailPct>0&&plan.runnerTrailPct<100):!(Number.isFinite(plan.runnerTarget)&&plan.runnerTarget>plan.takeProfit))throw new Error('The matching alert contains invalid runner exits.');
+      const position:ManagedPosition={id:randomUUID(),alertId:alert.id,chain:alert.chain,token:alert.token,pool:alert.pool,symbol:String(pair.symbol||'?').slice(0,30),amountUsd,entry,stop:plan.stop,
+        tp1:entry*(plan.takeProfit/plan.referenceEntry),tp2:trailing?null:entry*(plan.runnerTarget/plan.referenceEntry),planVersion:plan.version,
+        ...(trailing?{trailPct:plan.runnerTrailPct}:{}),initialLiquidity:pair.liquidity,openedAt:Date.now(),stage:'open',status:'open'};
       await q.query('INSERT INTO chart_positions(id,alert_id,chain,token,pool,data,status) VALUES($1,$2,$3,$4,$5,$6,\'open\')',[position.id,position.alertId,position.chain,position.token,position.pool,JSON.stringify(position)]);
       if(costEntry)await q.query(`INSERT INTO execution_cost_observations(position_id,chain,token,pool,entry_data,entry_liquidity_bucket)
         VALUES($1,$2,$3,$4,$5,$6)`,[position.id,position.chain,position.token,position.pool,JSON.stringify(costEntry),liquidityBucket(costEntry.liquidity)]);
@@ -489,6 +507,15 @@ export class Store {
     });
   }
   async openChartPositions():Promise<ManagedPosition[]> { return (await this.db.query("SELECT data FROM chart_positions WHERE status='open' ORDER BY opened_at")).rows.map(row=>row.data); }
+  async trackChartPositionTrail(positionId:string,price:number):Promise<ManagedPosition|undefined>{
+    return this.db.transaction(async q=>{
+      const row=(await q.query("SELECT data FROM chart_positions WHERE id=$1 AND status='open' FOR UPDATE",[positionId])).rows[0];
+      if(!row)return undefined;
+      const current=row.data as ManagedPosition,next=advancePositionTrail(current,price);
+      if(next.highWaterPrice!==current.highWaterPrice||next.trailStop!==current.trailStop)await q.query('UPDATE chart_positions SET data=$2 WHERE id=$1',[positionId,JSON.stringify(next)]);
+      return next;
+    });
+  }
   async openChartPosition(token:string):Promise<ManagedPosition|undefined>{
     return (await this.db.query("SELECT data FROM chart_positions WHERE status='open' AND lower(token)=lower($1) ORDER BY opened_at DESC LIMIT 1",[token])).rows[0]?.data;
   }
@@ -542,11 +569,17 @@ export class Store {
     return this.db.transaction(async q=>{
       const state=(await q.query('SELECT paused,chat_key FROM scanner_state WHERE id=1 FOR UPDATE')).rows[0];
       if(state.paused||state.chat_key!==chatKey)return false;
+      const row=(await q.query("SELECT data FROM chart_positions WHERE id=$1 AND status='open' FOR UPDATE",[position.id])).rows[0];
+      if(!row)return false;
+      const current=row.data as ManagedPosition;
+      const sample=data as {price?:number;liquidity?:number};
+      if(Number.isFinite(sample?.price)&&positionEvent(current,{price:sample.price!,liquidity:sample.liquidity??Infinity})!==event)return false;
       const inserted=await q.query("INSERT INTO chart_position_events(position_id,kind,data,status) VALUES($1,$2,$3,'reserved') ON CONFLICT DO NOTHING RETURNING position_id",[position.id,event,JSON.stringify(data)]);
       if(!inserted.rows.length)return false;
-      const closing=['stop','tp2','breakeven'].includes(event), stage=event==='tp1'?'tp1':position.stage;
+      const closing=['stop','tp2','breakeven','trail'].includes(event),stage=event==='tp1'?'tp1':current.stage;
+      const next=advancePositionTrail({...current,stage,status:closing?'closed':'open'},Number((data as {price?:number})?.price));
       await q.query(`UPDATE chart_positions SET status=$2,closed_at=CASE WHEN $2='closed' THEN clock_timestamp() ELSE NULL END,
-        data=jsonb_set(jsonb_set(data,'{stage}',$3::jsonb),'{status}',$4::jsonb) WHERE id=$1`,[position.id,closing?'closed':'open',JSON.stringify(stage),JSON.stringify(closing?'closed':'open')]);
+        data=$3::jsonb WHERE id=$1`,[position.id,closing?'closed':'open',JSON.stringify(next)]);
       return true;
     });
   }

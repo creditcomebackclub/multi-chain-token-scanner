@@ -43,3 +43,20 @@ test('mature observations remain queued for a one-pool historical backfill after
     assert.equal(candidate?.token,TOKEN);assert.equal(candidate?.pool,TOKEN);
   }finally{await store.db.close();}
 });
+
+test('re-evaluation preserves a previously stored legacy plan and frozen research labels',async()=>{
+  const store=await testStore();
+  try{
+    const setup={at,anchor:at-BAR,lower:98,upper:102,price:100,ema9:99,ema21:100,sma50:100,volumeRatio:2};
+    await store.saveChartResearch('legacy-plan',pair,history,features,setup);
+    const legacy={version:'super-scalp-entry-v3',referenceEntry:100,takeProfit:105,runnerTarget:110};
+    await store.db.query("UPDATE chart_research_observations SET data=jsonb_set(data,'{plan}',$1::jsonb) WHERE id='legacy-plan'",[JSON.stringify(legacy)]);
+    await store.saveChartResearch('legacy-plan',pair,history,features,setup);
+    const saved=(await store.db.query("SELECT data FROM chart_research_observations WHERE id='legacy-plan'")).rows[0].data;
+    assert.deepEqual(saved.plan,legacy);
+    const out=evaluateResearch(at,[{at,open:100,high:106,low:99,close:105,volume:100}],features,setup,200,at+BAR);
+    assert.equal(out.firstHit,'tp1','the offline +5% label remains unchanged');
+    await store.saveChartSignal('owner-signal',pair,setup);
+    assert.equal((await store.chartLearningStats()).total,0,'legacy /learn does not absorb the new owner-plan signals');
+  }finally{await store.db.close();}
+});
