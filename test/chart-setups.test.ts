@@ -68,11 +68,11 @@ test('end-to-end sends one fresh setup and restart does not duplicate it',async(
     await h.worker.tick();assert.equal(h.sends(),1);
     assert.equal((await h.store.chartStats()).sent7d,1);
     const saved=(await h.store.db.query('SELECT data FROM chart_setup_alerts')).rows[0].data;
-    assert.equal(saved.plan.version,'super-scalp-entry-v3');
-    assert.equal(saved.plan.takeProfit,saved.setup.price*1.05);
-    assert.equal(saved.plan.runnerTarget,saved.setup.price*1.1);
+    assert.equal(saved.plan.version,'owner-double-trail20-v1');
+    assert.equal(saved.plan.takeProfit,saved.setup.price*2);
+    assert.equal(saved.plan.runnerTarget,null);assert.equal(saved.plan.runnerTrailPct,20);
     const signal=(await h.store.db.query('SELECT decision,data FROM chart_signals')).rows[0];
-    assert.equal(signal.decision,'sent');assert.equal(signal.data.plan.version,'super-scalp-entry-v3');
+    assert.equal(signal.decision,'sent');assert.equal(signal.data.plan.version,'owner-double-trail20-v1');
     const research=(await h.store.db.query('SELECT kind,data FROM chart_research_observations')).rows[0];
     assert.equal(research.kind,'signal');assert.equal(research.data.evidence.market.liquidity,100000);assert.equal(research.data.evidence.security.status,'PASS');
     assert.ok(research.data.features.atrPct>0);assert.ok(Number.isFinite(research.data.features.ema9SlopePct));
