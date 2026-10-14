@@ -17,7 +17,8 @@ export interface Database extends Sql { transaction<T>(fn: (sql: Sql) => Promise
 export type ResearchCollectorName='regime'|'young_pool';
 export type ResearchCollectorCoverage={collector:ResearchCollectorName;activatedAt:number;days:number;observations:number;lastObservationAt:number|null};
 export type ResearchMilestoneEvent={key:string;kind:string;data:any;status:'reserved'|'sent'|'unknown';reservedAt:number;sentAt:number|null;messageId:number|null};
-export type DatabaseStorage={usageMb:number;tables:{name:string;sizeMb:number}[]};
+export type DatabaseStorage={usageMb:number;tables:{name:string;sizeMb:number}[];
+  databaseMb?:number;clusterMb?:number;walMb?:number|null;measurement?:'cluster-and-wal'|'database-only'};
 export function postgres(url: string): Database {
   const pool = new pg.Pool({ connectionString: url, max: 8, connectionTimeoutMillis: 5000, statement_timeout: 30_000 });
   pool.on('error', () => console.error('Postgres connection unavailable'));
@@ -37,7 +38,9 @@ const usage = (table:string) => `SELECT chain,token FROM ${table}
 export const candidateUsage = usage('alerts');
 const chartUsage=usage('chart_setup_alerts'), shortlistUsage=usage('shortlist_alerts');
 export class Store {
-  constructor(readonly db: Database,private runtimeConfig?:Pick<Config,'shadowPositionUsd'|'fomoFeeBpsPerSide'|'networkFeeUsd'>) {}
+  private storageBudget={checkedAt:-Infinity,allowed:true};
+  private storageBudgetCheck?:Promise<boolean>;
+  constructor(readonly db: Database,private runtimeConfig?:Pick<Config,'shadowPositionUsd'|'fomoFeeBpsPerSide'|'networkFeeUsd'> & Partial<Pick<Config,'dbVolumeLimitMb'>>) {}
   async migrate() {
     await this.db.query(schema);
     await this.db.query('INSERT INTO rule_versions(id,config) VALUES($1,$2) ON CONFLICT DO NOTHING', [RULE_ID, JSON.stringify(rules)]);
@@ -98,13 +101,44 @@ export class Store {
       [key,status,messageId??null]);
   }
   async databaseStorage():Promise<DatabaseStorage>{
-    const usage=Number((await this.db.query('SELECT pg_database_size(current_database())::bigint AS bytes')).rows[0].bytes);
+    const database=Number((await this.db.query('SELECT pg_database_size(current_database())::bigint AS bytes')).rows[0].bytes);
+    let cluster=database,wal:number|null=null,complete=false;
+    try{
+      cluster=Number((await this.db.query('SELECT sum(pg_database_size(oid))::bigint AS bytes FROM pg_database')).rows[0].bytes);
+      wal=Number((await this.db.query('SELECT coalesce(sum(size),0)::bigint AS bytes FROM pg_ls_waldir()')).rows[0].bytes);
+      complete=[database,cluster,wal].every(value=>Number.isFinite(value)&&value>=0)&&cluster>=database;
+    }catch{/* Restricted roles and the test engine cannot always inspect WAL. Never call this a volume measurement. */}
+    if(!complete){cluster=database;wal=null;}
     const names=['chart_candles','chart_research_observations','chart_research_outcomes','research_regime_candles','young_pool_research_observations',
       'young_pool_research_samples','young_pool_research_outcomes','wallet_watch_research_observations','wallet_watch_research_samples','wallet_watch_research_outcomes',
-      'shadow_variant_observations','shadow_variant_outcomes'];
+      'shadow_variant_observations','shadow_variant_outcomes','chart_signal_samples','chart_alert_samples'];
     const rows=(await this.db.query(`SELECT name,pg_total_relation_size(to_regclass(name))::bigint AS bytes
       FROM unnest($1::text[]) AS tables(name) WHERE to_regclass(name) IS NOT NULL ORDER BY bytes DESC`,[names])).rows;
-    return{usageMb:usage/1024/1024,tables:rows.map(row=>({name:String(row.name),sizeMb:Number(row.bytes)/1024/1024}))};
+    // Railway capacity is decimal MB. This is a lower bound: filesystem overhead,
+    // temporary files and other cluster files are not included. Keep ample reserve.
+    return{usageMb:(cluster+(wal??0))/1_000_000,databaseMb:database/1_000_000,clusterMb:cluster/1_000_000,
+      walMb:wal===null?null:wal/1_000_000,measurement:complete?'cluster-and-wal':'database-only',
+      tables:rows.map(row=>({name:String(row.name),sizeMb:Number(row.bytes)/1_000_000}))};
+  }
+  async researchWritesAllowed(now=Date.now()):Promise<boolean>{
+    const limit=this.runtimeConfig?.dbVolumeLimitMb;
+    if(limit===undefined)return true;
+    if(this.storageBudgetCheck)return this.storageBudgetCheck;
+    if(now>=this.storageBudget.checkedAt&&now-this.storageBudget.checkedAt<MINUTE)return this.storageBudget.allowed;
+    this.storageBudgetCheck=(async()=>{
+      let allowed=false,detail='Research writes paused: cluster/WAL storage measurement unavailable.';
+      try{
+        const storage=await this.databaseStorage(),threshold=this.storageBudget.allowed ? .80 : .70;
+        allowed=storage.measurement==='cluster-and-wal'&&storage.usageMb<limit*threshold;
+        detail=storage.measurement==='cluster-and-wal'
+          ?`${allowed?'Research writes enabled':'Research writes paused'}: database cluster + WAL ${storage.usageMb.toFixed(1)} / ${limit.toFixed(1)} MB (lower bound). Pause at 80%; resume below 70%.`
+          :detail;
+      }catch{/* Fail closed for new research; operational alerts and owner position tracking remain separate. */}
+      this.storageBudget={checkedAt:now,allowed};
+      await this.health('research-storage',allowed?'healthy':'degraded',detail).catch(()=>undefined);
+      return allowed;
+    })();
+    try{return await this.storageBudgetCheck;}finally{this.storageBudgetCheck=undefined;}
   }
   async saveSetupCandidates(entries: DiscoveryCandidate[], candleRetentionDays=35) {
     if (entries.length) await this.db.query(`INSERT INTO setup_candidates(chain,token,pool,data)
@@ -127,6 +161,7 @@ export class Store {
     await this.db.query('INSERT INTO chart_pair_states(chain,pool,data) VALUES($1,$2,$3) ON CONFLICT(chain,pool) DO UPDATE SET data=excluded.data', [chain,pool,JSON.stringify(data)]);
   }
   async saveChartResearch(id:string,pair:DiscoveryCandidate,bars:Candle[],features:ResearchFeatures,setup?:Setup,signalId?:string) {
+    if(!await this.researchWritesAllowed())return;
     await this.db.transaction(async q=>{
       await q.query(`INSERT INTO chart_candles(chain,token,pool,at,open,high,low,close,volume)
         SELECT $1,$2,$3,to_timestamp((x->>'at')::double precision/1000),(x->>'open')::double precision,(x->>'high')::double precision,
@@ -144,12 +179,14 @@ export class Store {
       WHERE r.variant_id=$1 AND o.created_at>=r.activated_at ON CONFLICT DO NOTHING`,[variant.id,id,setup?'signal':'control',date(features.at)]).catch(()=>undefined)));
   }
   async saveChartCandles(pair:DiscoveryCandidate,bars:Candle[]) {
+    if(!await this.researchWritesAllowed())return;
     await this.db.query(`INSERT INTO chart_candles(chain,token,pool,at,open,high,low,close,volume)
       SELECT $1,$2,$3,to_timestamp((x->>'at')::double precision/1000),(x->>'open')::double precision,(x->>'high')::double precision,
         (x->>'low')::double precision,(x->>'close')::double precision,(x->>'volume')::double precision
       FROM jsonb_array_elements($4::jsonb) x ON CONFLICT DO NOTHING`,[pair.chain,pair.token,pair.pool,JSON.stringify(bars)]);
   }
   async saveRegimeCandles(asset:'SOL'|'ETH'|'BNB',pair:{chain:Chain;token:string;pool:string},bars:Candle[]) {
+    if(!await this.researchWritesAllowed())return;
     if(!bars.length)return;
     await this.db.query(`INSERT INTO research_regime_candles(asset,chain,token,pool,at,open,high,low,close,volume)
       SELECT $1,$2,$3,$4,to_timestamp((x->>'at')::double precision/1000),(x->>'open')::double precision,(x->>'high')::double precision,
@@ -157,6 +194,7 @@ export class Store {
       FROM jsonb_array_elements($5::jsonb) x ON CONFLICT DO NOTHING`,[asset,pair.chain,pair.token,pair.pool,JSON.stringify(bars)]);
   }
   async saveYoungPoolResearch(id:string,pair:DiscoveryCandidate,market:Market,security:Security) {
+    if(!await this.researchWritesAllowed())return;
     const evidence={kind:'control',pair,market:{pool:market.pool,price:market.price,liquidity:market.liquidity,fdv:market.fdv,marketCap:market.marketCap,fetchedAt:market.fetchedAt},
       security:{status:security.status,reasons:security.reasons,buyTax:security.buyTax,sellTax:security.sellTax,checkedAt:security.checkedAt}};
     await this.db.transaction(async q=>{
@@ -176,10 +214,12 @@ export class Store {
       .map(row=>({...row,sourceAt:Number(row.sourceAt)}));
   }
   async saveYoungPoolResearchSample(id:string,at:number,price:number,liquidity:number){
+    if(!await this.researchWritesAllowed())return;
     await this.db.query(`INSERT INTO young_pool_research_samples(observation_id,at,price,liquidity)
       VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`,[id,date(Math.floor(at/MINUTE)*MINUTE),price,liquidity]);
   }
   async saveWalletWatchResearch(trade:WalletTrade,detectedAt:number,market:Market){
+    if(!await this.researchWritesAllowed())return;
     if(trade.side!=='buy')return;
     const delayMs=Math.max(0,detectedAt-trade.at),data={side:trade.side,tokenAmount:trade.tokenAmount,
       quoteSymbol:trade.quoteSymbol,quoteAmount:trade.quoteAmount,quoteUsd:trade.quoteUsd,
@@ -199,10 +239,12 @@ export class Store {
       .map(row=>({...row,sourceAt:Number(row.sourceAt)}));
   }
   async saveWalletWatchResearchSample(id:string,at:number,price:number,liquidity:number){
+    if(!await this.researchWritesAllowed())return;
     await this.db.query(`INSERT INTO wallet_watch_research_samples(observation_id,at,price,liquidity)
       VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`,[id,date(Math.floor(at/MINUTE)*MINUTE),price,liquidity]);
   }
   async updateMarketResearchOutcomes(now=Date.now()){
+    if(!await this.researchWritesAllowed(now))return{youngPool:0,walletWatch:0};
     const update=async(kind:'young_pool'|'wallet_watch')=>{
       const observations=`${kind}_research_observations`,samples=`${kind}_research_samples`,outcomes=`${kind}_research_outcomes`;
       const rows=(await this.db.query(`SELECT o.id,extract(epoch FROM ${kind==='wallet_watch'?'o.source_at':'o.at'})*1000 AS at,o.data,
@@ -235,6 +277,7 @@ export class Store {
     });
   }
   async updateChartResearchOutcomes(now:number,costBps:number) {
+    if(!await this.researchWritesAllowed(now))return 0;
     const observations=(await this.db.query(`SELECT o.id,o.chain,o.pool,extract(epoch FROM o.at)*1000 AS at,o.data
       FROM chart_research_observations o LEFT JOIN chart_research_outcomes r ON r.observation_id=o.id
       WHERE o.at>$1 AND o.at<$2 AND (r.observation_id IS NULL OR ((r.data->>'complete')::boolean=false AND r.updated_at<clock_timestamp()-interval '10 minutes'))
@@ -258,6 +301,7 @@ export class Store {
       medianMfe:median(complete.map(o=>o.mfePct??NaN)),medianMae:median(complete.map(o=>o.maePct??NaN)),horizons};
   }
   async updateShadowVariantOutcomes(now:number,costBps:number) {
+    if(!await this.researchWritesAllowed(now))return 0;
     for(const variant of forwardShadowVariants)await this.db.query(`INSERT INTO shadow_variant_observations(variant_id,observation_id,population,at)
       SELECT r.variant_id,o.id,o.kind,o.at FROM shadow_variant_registry r JOIN chart_research_observations o
         ON o.at>=r.locked_start AND o.created_at>=r.activated_at
@@ -377,6 +421,7 @@ export class Store {
       FROM chart_signals s LEFT JOIN chart_signal_outcomes o ON o.signal_id=s.id WHERE s.detected_at>$1`,[date(now-25*HOUR)])).rows.map(row=>({...row,at:Number(row.at)}));
   }
   async recordChartSignalSample(id:string,at:number,price:number,liquidity:number,outcome:AlertOutcome) {
+    if(!await this.researchWritesAllowed())return;
     if (![at,price,liquidity].every(Number.isFinite) || price<=0 || liquidity<0) throw new Error('Invalid chart signal sample');
     const minute=Math.floor(at/MINUTE)*MINUTE;
     await this.db.transaction(async q=>{

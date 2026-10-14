@@ -1,0 +1,13 @@
+# Database storage recovery — October 13, 2026
+
+Railway reported 498.6 MB used on a 500 MB Postgres volume. Postgres repeatedly panicked during recovery with `No space left on device`; the scanner container remained deployed but could not reliably persist observations or alerts.
+
+The existing volume was expanded to 5 GB without wiping it, deleting research, exposing a public database port, or upgrading the plan. `DB_VOLUME_LIMIT_MB=5000` was staged for the scanner without deploying unmerged code. Recovery was verified through the existing private SSH connection using a read-only repeatable-read database transaction at **2026-10-14 02:12:51 UTC / October 13, 7:12:51 PM Arizona**.
+
+The recovered database contained 32,823 chart research observations, 417 young-pool observations and 10,526 regime candles; 9,026 regime rows were dated on or after collector activation. Both prospective cohorts covered 12 distinct UTC dates, including partial dates. New chart and collector observations were being written, chart coverage reported 10/10 fresh pairs, and private Telegram polling was healthy. These checks establish that persisted history survived and collection resumed; they do not assert uninterrupted coverage during the outage.
+
+Database files used 369.9 MB; all database files used 393.1 MB; WAL used 50.3 MB after recovery. The largest tables were raw signal samples (91.6 MB), chart candles (88.0 MB), research outcomes (61.7 MB), and research observations (60.5 MB). Statistics counters reset during crash recovery, so their live/dead-tuple estimates were not interpreted as table row counts. PostgreSQL autovacuum and durable WAL remained enabled; `max_wal_size` was 1024 MB and is a soft checkpoint target, not a quota.
+
+The previous warning measured only the current database and used binary MiB against a decimal-MB budget. It could therefore miss transaction-log and other database space. The fix measures all database files plus WAL consistently in decimal MB, labels that quantity as a physical-usage lower bound, prioritizes storage notices ahead of expensive summaries, and scopes notices to capacity so resizing does not suppress future warnings.
+
+A minute-cached research guard pauses new research writes at 80%, resumes below 70%, and pauses when the required measurement is unavailable. It preserves existing observations and does not fabricate outcomes for missing intervals. Alert rules, delivery caps, actual-fill logging and owner-position monitoring retain their existing behavior. Data deletion, research threshold changes and disabling PostgreSQL durability are not part of recovery. Physical volume monitoring and capacity planning are still required; no software guard guarantees that every source of disk growth can be prevented.

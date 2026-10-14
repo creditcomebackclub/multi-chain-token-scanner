@@ -54,7 +54,7 @@ export class ChartMonitor {
   stop() { this.stopped = true; }
   async tick(now = Date.now()) {
     if (this.stopped) return;
-    const alerts = await this.store.chartAlertsForTracking(now), signals=await this.store.chartSignalsForTracking(now), positions = await this.store.openChartPositions();
+    const alerts = await this.store.chartAlertsForTracking(now), signals=await this.store.researchWritesAllowed(now)?await this.store.chartSignalsForTracking(now):[], positions = await this.store.openChartPositions();
     const keys = new Map<string,{chain:Chain;token:string}>();
     for (const item of [...alerts,...signals,...positions]) keys.set(`${item.chain}:${item.token}`,{chain:item.chain,token:item.token});
     let sampled=0, missing=0, notices=0;

@@ -27,11 +27,14 @@ export class ResearchCollector{
   async tick(){
     if(this.stopped||!this.c.ingestionEnabled)return;
     if(!(this.c.regimeCandlesEnabled||this.c.youngPoolResearchEnabled||this.c.walletWatchEnabled))return;
+    if(!await this.store.researchWritesAllowed())return;
     if(this.c.regimeCandlesEnabled)await this.collectRegimeCandles();
     if(this.c.youngPoolResearchEnabled||this.c.walletWatchEnabled)await this.sampleMarketResearch();
+    await this.store.health('research-collection','healthy','Read-only research cycle completed; individual collector health reports coverage.');
   }
   async observeYoungPools(candidates:DiscoveryCandidate[],now=Date.now()){
     if(this.stopped||!this.c.youngPoolResearchEnabled||!this.c.ingestionEnabled)return 0;
+    if(!await this.store.researchWritesAllowed(now))return 0;
     let recorded=0;
     for(const chain of this.c.chains){
       const group=candidates.filter(candidate=>candidate.chain===chain&&youngEligible(candidate,now)).sort((a,b)=>b.volume5m-a.volume5m);

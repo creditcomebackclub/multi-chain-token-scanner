@@ -38,6 +38,7 @@ export class ResearchMilestones{
   private shadows(){return this.inputs.shadows?.()??this.store.shadowVariantProgress();}
   private storage(){return this.inputs.storage?.()??this.store.databaseStorage();}
   private costs(){return this.inputs.costs?.()??this.store.executionCostSummary();}
+  private storageKey(threshold:number){return this.c.dbVolumeLimitMb===500?`storage:${threshold}`:`storage:${threshold}:${this.c.dbVolumeLimitMb}`;}
   private async notify(key:string,kind:string,data:unknown,message:string){
     if(!await this.store.claimResearchMilestone(key,kind,data))return false;
     try{const messageId=await this.delivery.send(message);await this.store.finishResearchMilestone(key,'sent',messageId);}
@@ -58,11 +59,25 @@ export class ResearchMilestones{
     if(!this.c.researchMilestonesEnabled||(await this.store.state()).chat_key!==this.delivery.chatKey)return 0;
     return this.costMilestones();
   }
+  private async storageMilestones(){
+    let attempts=0;
+    try{
+      const storage=await this.storage(),thresholds=crossedStorageThresholds(storage.usageMb,this.c.dbVolumeLimitMb);
+      if(storage.measurement==='database-only')attempts+=Number(await this.notify(`storage:measurement-unavailable:${this.c.dbVolumeLimitMb}`,'storage_measurement',
+        {storage,limitMb:this.c.dbVolumeLimitMb},'⚠️ <b>STORAGE MEASUREMENT INCOMPLETE</b>\n\nPostgreSQL transaction-log sizes are unavailable. The displayed database size understates volume usage. New research writes are paused until the measurement recovers. Check Railway volume metrics.'));
+      const tables=storage.tables.slice(0,5).map(item=>`• ${escapeHtml(item.name)}: ${item.sizeMb.toFixed(1)} MB`).join('\n')||'No research table sizes available.';
+      const source=storage.measurement==='cluster-and-wal'?'Database cluster + WAL (lower bound; excludes filesystem overhead and temporary files)':'Database usage';
+      for(const threshold of [80,90] as const)if(thresholds[`crossed${threshold}`])attempts+=Number(await this.notify(this.storageKey(threshold),'storage_warning',
+        {threshold,storage,limitMb:this.c.dbVolumeLimitMb},`⚠️ <b>DATABASE STORAGE ${threshold}% WARNING</b>\n\n${source}: ${storage.usageMb.toFixed(1)} MB / ${this.c.dbVolumeLimitMb.toFixed(1)} MB (${thresholds.percent.toFixed(1)}%).\n\nNew research writes pause at 80% to leave recovery headroom. Existing research is preserved. Check Railway volume metrics before resizing.\n\n<b>Largest research tables</b>\n${tables}`));
+    }catch{/* Storage introspection failure must not block other research milestones. */}
+    return attempts;
+  }
   async run(now=Date.now()){
     if(!this.c.researchMilestonesEnabled)return 0;
     const state=await this.store.state();
     if(state.chat_key!==this.delivery.chatKey||!await this.store.claimResearchMilestoneRun(now))return 0;
-    let attempts=0;
+    // Storage warnings must not wait behind potentially expensive cohort/model summaries.
+    let attempts=await this.storageMilestones();
     const enabled=this.enabledCollectors(),coverage=await this.coverage(),byCollector=new Map(coverage.map(item=>[item.collector,item]));
     if(enabled.length&&enabled.every(collector=>byCollector.has(collector))){
       const activation=Math.max(...enabled.map(collector=>byCollector.get(collector)!.activatedAt));
@@ -88,13 +103,6 @@ export class ResearchMilestones{
     }
 
     attempts+=await this.costMilestones();
-
-    try{
-      const storage=await this.storage(),thresholds=crossedStorageThresholds(storage.usageMb,this.c.dbVolumeLimitMb);
-      const tables=storage.tables.slice(0,5).map(item=>`• ${escapeHtml(item.name)}: ${item.sizeMb.toFixed(1)} MB`).join('\n')||'No research table sizes available.';
-      for(const threshold of [80,90] as const)if(thresholds[`crossed${threshold}`])attempts+=Number(await this.notify(`storage:${threshold}`,'storage_warning',
-        {threshold,storage,limitMb:this.c.dbVolumeLimitMb},`⚠️ <b>DATABASE STORAGE ${threshold}% WARNING</b>\n\nCurrent database usage: ${storage.usageMb.toFixed(1)} MB / ${this.c.dbVolumeLimitMb.toFixed(1)} MB (${thresholds.percent.toFixed(1)}%).\n\n<b>Largest research tables</b>\n${tables}`));
-    }catch{/* Storage introspection failure must not block other research milestones. */}
 
     const existing=await this.store.researchMilestoneEvents();
     for(const collector of enabled){
@@ -132,7 +140,8 @@ export class ResearchMilestones{
       rows.push(status(`shadow:${shadow.id}:days:${shadow.requiredDays}`,`${shadow.label}: ${shadow.requiredDays} distinct signal days`,monitoring));
       rows.push(status(`shadow:${shadow.id}:owner-review`,`${shadow.label}: eligible for owner review`,monitoring));
     }
-    rows.push(status('storage:80','Database storage at 80%',monitoring),status('storage:90','Database storage at 90%',monitoring));
+    rows.push(status(this.storageKey(80),'Database storage at 80%',monitoring),status(this.storageKey(90),'Database storage at 90%',monitoring));
+    rows.push(status(`storage:measurement-unavailable:${this.c.dbVolumeLimitMb}`,'Cluster/WAL storage measurement unavailable',monitoring));
     rows.push(status('costs:first-observed','First observed execution cost',monitoring));
     rows.push(status('costs:calibration-20','20-fill cost calibration checkpoint',monitoring));
     rows.push(status('costs:model-v1-invalidated','cost-model-v1 invalidated',monitoring));
